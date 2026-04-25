@@ -1,0 +1,140 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestHealthHandler(t *testing.T) {
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	healthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp HealthResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if resp.Status != "healthy" {
+		t.Errorf("expected status healthy, got %s", resp.Status)
+	}
+	if resp.Service != "health-checker" {
+		t.Errorf("expected service health-checker, got %s", resp.Service)
+	}
+}
+
+func TestCheckServiceHealthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	target := ServiceTarget{Name: "test-svc", URL: server.URL + "/health"}
+	result := CheckService(client, target)
+
+	if result.Status != "healthy" {
+		t.Errorf("expected healthy, got %s", result.Status)
+	}
+	if result.Service != "test-svc" {
+		t.Errorf("expected test-svc, got %s", result.Service)
+	}
+	if result.ResponseTimeMs < 0 {
+		t.Errorf("response time should be >= 0, got %f", result.ResponseTimeMs)
+	}
+}
+
+func TestCheckServiceUnhealthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	target := ServiceTarget{Name: "bad-svc", URL: server.URL + "/health"}
+	result := CheckService(client, target)
+
+	if result.Status != "unhealthy" {
+		t.Errorf("expected unhealthy, got %s", result.Status)
+	}
+	if result.Error != "HTTP 500" {
+		t.Errorf("expected 'HTTP 500', got '%s'", result.Error)
+	}
+}
+
+func TestCheckServiceConnectionError(t *testing.T) {
+	client := &http.Client{}
+	target := ServiceTarget{Name: "down-svc", URL: "http://127.0.0.1:1/health"}
+	result := CheckService(client, target)
+
+	if result.Status != "unhealthy" {
+		t.Errorf("expected unhealthy, got %s", result.Status)
+	}
+	if result.Error == "" {
+		t.Error("expected non-empty error")
+	}
+}
+
+func TestReportMetricSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			t.Errorf("expected /metrics, got %s", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("expected application/json content type")
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	result := CheckResult{Service: "test", Status: "healthy", ResponseTimeMs: 10, Timestamp: 1234567890}
+	err := ReportMetric(client, server.URL, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCheckHandler(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer backend.Close()
+
+	targets := []ServiceTarget{
+		{Name: "svc-a", URL: backend.URL + "/health"},
+	}
+
+	handler := makeCheckHandler(targets)
+	req := httptest.NewRequest("GET", "/check", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	results, ok := body["results"].([]interface{})
+	if !ok || len(results) != 1 {
+		t.Fatalf("expected 1 result, got %v", body["results"])
+	}
+}
+
+func TestGetEnv(t *testing.T) {
+	if got := GetEnv("DEFINITELY_NOT_SET_XYZ", "fallback"); got != "fallback" {
+		t.Errorf("expected fallback, got %s", got)
+	}
+	t.Setenv("TEST_ENV_VAR_ABC", "custom")
+	if got := GetEnv("TEST_ENV_VAR_ABC", "fallback"); got != "custom" {
+		t.Errorf("expected custom, got %s", got)
+	}
+}
