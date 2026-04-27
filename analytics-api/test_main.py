@@ -18,6 +18,8 @@ def test_health():
     data = resp.json()
     assert data["status"] == "healthy"
     assert data["service"] == "analytics-api"
+    assert "timestamp" in data
+    assert isinstance(data["timestamp"], float)
 
 
 def test_post_metric():
@@ -27,6 +29,18 @@ def test_post_metric():
     data = resp.json()
     assert data["recorded"] is True
     assert data["service"] == "web"
+
+
+def test_post_metric_negative_response_time():
+    payload = {"service": "web", "status": "healthy", "response_time_ms": -10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_zero_response_time():
+    payload = {"service": "web", "status": "healthy", "response_time_ms": 0.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 201
 
 
 def test_get_metrics_empty():
