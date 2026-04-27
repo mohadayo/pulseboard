@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -20,6 +20,13 @@ class MetricPayload(BaseModel):
     status: str
     response_time_ms: float
     timestamp: float | None = None
+
+    @field_validator("response_time_ms")
+    @classmethod
+    def validate_response_time(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("response_time_ms must be non-negative")
+        return v
 
 
 @dataclass
@@ -73,7 +80,7 @@ store = MetricsStore()
 @app.get("/health")
 def health():
     logger.debug("Health check requested")
-    return {"status": "healthy", "service": "analytics-api"}
+    return {"status": "healthy", "service": "analytics-api", "timestamp": time.time()}
 
 
 @app.post("/metrics", status_code=201)
