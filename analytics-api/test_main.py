@@ -2,7 +2,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from main import MetricsStore, app, store
+from main import MetricRecord, MetricsStore, app, store
 
 
 client = TestClient(app)
@@ -74,9 +74,45 @@ def test_summary():
 
 def test_metrics_store_unit():
     s = MetricsStore()
-    s.add(s.__class__.__dataclass_fields__ and __import__("main").MetricRecord(
+    s.add(MetricRecord(
         service="x", status="healthy", response_time_ms=5, timestamp=time.time()
     ))
     assert len(s.get_all()) == 1
     assert len(s.get_by_service("x")) == 1
     assert len(s.get_by_service("y")) == 0
+
+
+def test_metrics_store_max_capacity():
+    s = MetricsStore(max_records=3)
+    for i in range(5):
+        s.add(MetricRecord(
+            service=f"svc-{i}", status="healthy", response_time_ms=10.0, timestamp=time.time()
+        ))
+    assert len(s.get_all()) == 3
+    services = [r.service for r in s.get_all()]
+    assert "svc-0" not in services
+    assert "svc-1" not in services
+    assert "svc-4" in services
+
+
+def test_metrics_store_eviction_preserves_order():
+    s = MetricsStore(max_records=2)
+    for i in range(4):
+        s.add(MetricRecord(
+            service=f"s{i}", status="healthy", response_time_ms=float(i), timestamp=time.time()
+        ))
+    records = s.get_all()
+    assert len(records) == 2
+    assert records[0].service == "s2"
+    assert records[1].service == "s3"
+
+
+def test_metrics_store_at_exact_capacity():
+    s = MetricsStore(max_records=3)
+    for i in range(3):
+        s.add(MetricRecord(
+            service=f"svc-{i}", status="healthy", response_time_ms=10.0, timestamp=time.time()
+        ))
+    assert len(s.get_all()) == 3
+    services = [r.service for r in s.get_all()]
+    assert services == ["svc-0", "svc-1", "svc-2"]
