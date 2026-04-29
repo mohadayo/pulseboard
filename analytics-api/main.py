@@ -14,6 +14,8 @@ logger = logging.getLogger("analytics-api")
 
 app = FastAPI(title="PulseBoard Analytics API", version="1.0.0")
 
+MAX_RECORDS = int(os.getenv("MAX_RECORDS", "10000"))
+
 
 class MetricPayload(BaseModel):
     service: str
@@ -40,9 +42,14 @@ class MetricRecord:
 @dataclass
 class MetricsStore:
     records: list[MetricRecord] = field(default_factory=list)
+    max_records: int = MAX_RECORDS
 
     def add(self, record: MetricRecord) -> MetricRecord:
         self.records.append(record)
+        if len(self.records) > self.max_records:
+            removed = len(self.records) - self.max_records
+            del self.records[:removed]
+            logger.info("Evicted %d old records (store capped at %d)", removed, self.max_records)
         logger.info("Recorded metric for service=%s status=%s", record.service, record.status)
         return record
 
