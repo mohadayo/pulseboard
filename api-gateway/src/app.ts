@@ -10,6 +10,7 @@ const logger = createLogger({
 
 const ANALYTICS_URL = process.env.ANALYTICS_URL || "http://localhost:8001";
 const CHECKER_URL = process.env.CHECKER_URL || "http://localhost:8002";
+const PROXY_TIMEOUT = parseInt(process.env.PROXY_TIMEOUT || "5000", 10);
 
 const app = express();
 app.use(express.json());
@@ -23,9 +24,15 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "healthy", service: "api-gateway" });
 });
 
-app.get("/api/metrics", async (_req: Request, res: Response) => {
+app.get("/api/metrics", async (req: Request, res: Response) => {
   try {
-    const resp = await axios.get(`${ANALYTICS_URL}/metrics`);
+    const params = new URLSearchParams();
+    if (req.query.service) params.set("service", String(req.query.service));
+    const qs = params.toString();
+    const url = qs
+      ? `${ANALYTICS_URL}/metrics?${qs}`
+      : `${ANALYTICS_URL}/metrics`;
+    const resp = await axios.get(url, { timeout: PROXY_TIMEOUT });
     res.json(resp.data);
   } catch (err) {
     const message =
@@ -39,7 +46,7 @@ app.get("/api/metrics", async (_req: Request, res: Response) => {
 
 app.get("/api/metrics/summary", async (_req: Request, res: Response) => {
   try {
-    const resp = await axios.get(`${ANALYTICS_URL}/metrics/summary`);
+    const resp = await axios.get(`${ANALYTICS_URL}/metrics/summary`, { timeout: PROXY_TIMEOUT });
     res.json(resp.data);
   } catch (err) {
     const message =
@@ -53,7 +60,7 @@ app.get("/api/metrics/summary", async (_req: Request, res: Response) => {
 
 app.post("/api/metrics", async (req: Request, res: Response) => {
   try {
-    const resp = await axios.post(`${ANALYTICS_URL}/metrics`, req.body);
+    const resp = await axios.post(`${ANALYTICS_URL}/metrics`, req.body, { timeout: PROXY_TIMEOUT });
     res.status(resp.status).json(resp.data);
   } catch (err) {
     const message =
@@ -67,7 +74,7 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
 
 app.get("/api/check", async (_req: Request, res: Response) => {
   try {
-    const resp = await axios.get(`${CHECKER_URL}/check`);
+    const resp = await axios.get(`${CHECKER_URL}/check`, { timeout: PROXY_TIMEOUT });
     res.json(resp.data);
   } catch (err) {
     const message =
