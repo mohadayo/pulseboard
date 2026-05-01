@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -43,25 +44,31 @@ class MetricRecord:
 class MetricsStore:
     records: list[MetricRecord] = field(default_factory=list)
     max_records: int = MAX_RECORDS
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add(self, record: MetricRecord) -> MetricRecord:
-        self.records.append(record)
-        if len(self.records) > self.max_records:
-            removed = len(self.records) - self.max_records
-            del self.records[:removed]
-            logger.info("Evicted %d old records (store capped at %d)", removed, self.max_records)
+        with self._lock:
+            self.records.append(record)
+            if len(self.records) > self.max_records:
+                removed = len(self.records) - self.max_records
+                del self.records[:removed]
+                logger.info("Evicted %d old records (store capped at %d)", removed, self.max_records)
         logger.info("Recorded metric for service=%s status=%s", record.service, record.status)
         return record
 
     def get_all(self) -> list[MetricRecord]:
-        return list(self.records)
+        with self._lock:
+            return list(self.records)
 
     def get_by_service(self, service: str) -> list[MetricRecord]:
-        return [r for r in self.records if r.service == service]
+        with self._lock:
+            return [r for r in self.records if r.service == service]
 
     def summary(self) -> dict:
+        with self._lock:
+            records_snapshot = list(self.records)
         services: dict[str, dict] = {}
-        for r in self.records:
+        for r in records_snapshot:
             if r.service not in services:
                 services[r.service] = {"total": 0, "healthy": 0, "avg_response_ms": 0.0, "times": []}
             s = services[r.service]
@@ -122,3 +129,4 @@ if __name__ == "__main__":
     port = int(os.getenv("ANALYTICS_PORT", "8001"))
     logger.info("Starting Analytics API on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port)
+
