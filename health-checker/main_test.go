@@ -108,11 +108,16 @@ func TestCheckHandler(t *testing.T) {
 	}))
 	defer backend.Close()
 
+	mockAnalytics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer mockAnalytics.Close()
+
 	targets := []ServiceTarget{
 		{Name: "svc-a", URL: backend.URL + "/health"},
 	}
 
-	handler := makeCheckHandler(targets)
+	handler := makeCheckHandler(targets, mockAnalytics.URL)
 	req := httptest.NewRequest("GET", "/check", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -127,6 +132,10 @@ func TestCheckHandler(t *testing.T) {
 	if !ok || len(results) != 1 {
 		t.Fatalf("expected 1 result, got %v", body["results"])
 	}
+	reported := int(body["reported"].(float64))
+	if reported != 1 {
+		t.Errorf("expected 1 reported, got %d", reported)
+	}
 }
 
 func TestGetEnv(t *testing.T) {
@@ -138,3 +147,4 @@ func TestGetEnv(t *testing.T) {
 		t.Errorf("expected custom, got %s", got)
 	}
 }
+

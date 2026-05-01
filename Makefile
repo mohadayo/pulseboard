@@ -3,7 +3,7 @@
 test: test-python test-go test-ts
 
 test-python:
-	cd analytics-api && pip install -q -r requirements.txt && pytest -v
+	cd analytics-api && pip install -q -r requirements-dev.txt && pytest -v
 
 test-go:
 	cd health-checker && go test -v ./...
@@ -14,7 +14,7 @@ test-ts:
 lint: lint-python lint-go lint-ts
 
 lint-python:
-	cd analytics-api && flake8 --max-line-length=120 --exclude=__pycache__ main.py
+	cd analytics-api && pip install -q -r requirements-dev.txt && flake8 --max-line-length=120 --exclude=__pycache__ main.py
 
 lint-go:
 	cd health-checker && go vet ./...

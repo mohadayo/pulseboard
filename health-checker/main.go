@@ -111,7 +111,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func makeCheckHandler(targets []ServiceTarget) http.HandlerFunc {
+func makeCheckHandler(targets []ServiceTarget, analyticsURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client := &http.Client{Timeout: 5 * time.Second}
 		results := make([]CheckResult, 0, len(targets))
@@ -121,10 +121,18 @@ func makeCheckHandler(targets []ServiceTarget) http.HandlerFunc {
 			results = append(results, result)
 		}
 
+		reported := 0
+		for _, result := range results {
+			if err := ReportMetric(client, analyticsURL, result); err == nil {
+				reported++
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"checked_at": time.Now().UTC().Format(time.RFC3339),
 			"results":    results,
+			"reported":   reported,
 		})
 	}
 }
@@ -135,10 +143,12 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/check", makeCheckHandler(targets))
+	analyticsURL := GetEnv("ANALYTICS_URL", "http://localhost:8001")
+	mux.HandleFunc("/check", makeCheckHandler(targets, analyticsURL))
 
 	log.Printf("[INFO] Health Checker starting on port %s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("[FATAL] Server failed: %v", err)
 	}
 }
+
