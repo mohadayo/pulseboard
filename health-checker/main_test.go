@@ -148,3 +148,90 @@ func TestGetEnv(t *testing.T) {
 	}
 }
 
+func TestReportMetricFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	result := CheckResult{Service: "test", Status: "healthy", ResponseTimeMs: 10, Timestamp: 1234567890}
+	err := ReportMetric(client, server.URL, result)
+	if err == nil {
+		t.Fatal("expected error for non-201 response, got nil")
+	}
+}
+
+func TestCheckHandler_ReportingFails(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer backend.Close()
+
+	mockAnalytics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer mockAnalytics.Close()
+
+	targets := []ServiceTarget{
+		{Name: "svc-a", URL: backend.URL + "/health"},
+	}
+
+	handler := makeCheckHandler(targets, mockAnalytics.URL)
+	req := httptest.NewRequest("GET", "/check", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	reported := int(body["reported"].(float64))
+	if reported != 0 {
+		t.Errorf("expected 0 reported when analytics fails, got %d", reported)
+	}
+}
+
+func TestCheckHandler_MultipleTargets(t *testing.T) {
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer healthy.Close()
+
+	unhealthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer unhealthy.Close()
+
+	mockAnalytics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer mockAnalytics.Close()
+
+	targets := []ServiceTarget{
+		{Name: "svc-ok", URL: healthy.URL + "/health"},
+		{Name: "svc-bad", URL: unhealthy.URL + "/health"},
+	}
+
+	handler := makeCheckHandler(targets, mockAnalytics.URL)
+	req := httptest.NewRequest("GET", "/check", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	results := body["results"].([]interface{})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	reported := int(body["reported"].(float64))
+	if reported != 2 {
+		t.Errorf("expected 2 reported, got %d", reported)
+	}
+}
+

@@ -116,3 +116,35 @@ def test_metrics_store_at_exact_capacity():
     assert len(s.get_all()) == 3
     services = [r.service for r in s.get_all()]
     assert services == ["svc-0", "svc-1", "svc-2"]
+
+
+def test_post_metric_missing_required_fields():
+    resp = client.post("/metrics", json={})
+    assert resp.status_code == 422
+
+
+def test_post_metric_explicit_timestamp():
+    payload = {
+        "service": "web",
+        "status": "healthy",
+        "response_time_ms": 10.0,
+        "timestamp": 1700000000.0,
+    }
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["timestamp"] == 1700000000.0
+
+
+def test_summary_empty_store():
+    resp = client.get("/metrics/summary")
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+
+def test_get_metrics_unknown_service():
+    resp = client.get("/metrics?service=nonexistent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 0
+    assert data["metrics"] == []
