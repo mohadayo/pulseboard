@@ -4,7 +4,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from pydantic import BaseModel, field_validator
 
 logging.basicConfig(
@@ -64,6 +64,15 @@ class MetricsStore:
         with self._lock:
             return [r for r in self.records if r.service == service]
 
+    def delete_by_service(self, service: str) -> int:
+        with self._lock:
+            before = len(self.records)
+            self.records = [r for r in self.records if r.service != service]
+            deleted = before - len(self.records)
+        if deleted > 0:
+            logger.info("Deleted %d records for service=%s", deleted, service)
+        return deleted
+
     def summary(self) -> dict:
         with self._lock:
             records_snapshot = list(self.records)
@@ -118,6 +127,14 @@ def get_metrics(service: str | None = None):
     return {"count": len(records), "metrics": [r.__dict__ for r in records]}
 
 
+@app.delete("/metrics")
+def delete_metrics(service: str = Query(..., description="削除対象のサービス名")):
+    deleted = store.delete_by_service(service)
+    if deleted == 0:
+        return {"error": "No metrics found for the specified service", "deleted_count": 0}
+    return {"message": "Metrics deleted", "service": service, "deleted_count": deleted}
+
+
 @app.get("/metrics/summary")
 def get_summary():
     return store.summary()
@@ -129,4 +146,3 @@ if __name__ == "__main__":
     port = int(os.getenv("ANALYTICS_PORT", "8001"))
     logger.info("Starting Analytics API on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port)
-
