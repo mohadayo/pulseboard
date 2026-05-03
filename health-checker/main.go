@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -146,9 +150,37 @@ func main() {
 	analyticsURL := GetEnv("ANALYTICS_URL", "http://localhost:8001")
 	mux.HandleFunc("/check", makeCheckHandler(targets, analyticsURL))
 
-	log.Printf("[INFO] Health Checker starting on port %s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		log.Fatalf("[FATAL] Server failed: %v", err)
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
 	}
-}
 
+	shutdownTimeout := 30 * time.Second
+	if v := os.Getenv("SHUTDOWN_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			shutdownTimeout = time.Duration(n) * time.Second
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("[INFO] Health Checker starting on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("[FATAL] Server failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	stop()
+	log.Printf("[INFO] Shutting down gracefully...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("[FATAL] Forced shutdown: %v", err)
+	}
+	log.Println("[INFO] Server stopped")
+}
