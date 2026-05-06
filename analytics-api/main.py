@@ -1,11 +1,13 @@
 import logging
+import math
 import os
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Literal
 
 from fastapi import FastAPI, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -16,19 +18,42 @@ logger = logging.getLogger("analytics-api")
 app = FastAPI(title="PulseBoard Analytics API", version="1.0.0")
 
 MAX_RECORDS = int(os.getenv("MAX_RECORDS", "10000"))
+MAX_SERVICE_LENGTH = 100
+MAX_RESPONSE_TIME_MS = 60_000.0
+ALLOWED_STATUSES = ("healthy", "unhealthy", "degraded", "unknown")
+StatusLiteral = Literal["healthy", "unhealthy", "degraded", "unknown"]
 
 
 class MetricPayload(BaseModel):
-    service: str
-    status: str
-    response_time_ms: float
-    timestamp: float | None = None
+    service: str = Field(..., min_length=1, max_length=MAX_SERVICE_LENGTH)
+    status: StatusLiteral
+    response_time_ms: float = Field(..., ge=0, le=MAX_RESPONSE_TIME_MS)
+    timestamp: float | None = Field(default=None, gt=0)
+
+    @field_validator("service")
+    @classmethod
+    def validate_service(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("service must not be blank")
+        if len(stripped) > MAX_SERVICE_LENGTH:
+            raise ValueError(f"service must be at most {MAX_SERVICE_LENGTH} characters")
+        return stripped
 
     @field_validator("response_time_ms")
     @classmethod
     def validate_response_time(cls, v: float) -> float:
-        if v < 0:
-            raise ValueError("response_time_ms must be non-negative")
+        if not math.isfinite(v):
+            raise ValueError("response_time_ms must be a finite number")
+        return v
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if not math.isfinite(v):
+            raise ValueError("timestamp must be a finite number")
         return v
 
 
@@ -128,11 +153,21 @@ def get_metrics(service: str | None = None):
 
 
 @app.delete("/metrics")
-def delete_metrics(service: str = Query(..., description="削除対象のサービス名")):
-    deleted = store.delete_by_service(service)
+def delete_metrics(
+    service: str = Query(
+        ...,
+        description="削除対象のサービス名",
+        min_length=1,
+        max_length=MAX_SERVICE_LENGTH,
+    ),
+):
+    normalized = service.strip()
+    if not normalized:
+        return {"error": "service must not be blank", "deleted_count": 0}
+    deleted = store.delete_by_service(normalized)
     if deleted == 0:
         return {"error": "No metrics found for the specified service", "deleted_count": 0}
-    return {"message": "Metrics deleted", "service": service, "deleted_count": deleted}
+    return {"message": "Metrics deleted", "service": normalized, "deleted_count": deleted}
 
 
 @app.get("/metrics/summary")
