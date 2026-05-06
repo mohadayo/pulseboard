@@ -208,3 +208,82 @@ def test_metrics_store_delete_nonexistent():
     deleted = s.delete_by_service("y")
     assert deleted == 0
     assert len(s.get_all()) == 1
+
+
+def test_post_metric_rejects_invalid_status():
+    payload = {"service": "web", "status": "broken", "response_time_ms": 10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_rejects_blank_service():
+    payload = {"service": "   ", "status": "healthy", "response_time_ms": 10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_rejects_empty_service():
+    payload = {"service": "", "status": "healthy", "response_time_ms": 10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_rejects_overlong_service():
+    payload = {"service": "x" * 101, "status": "healthy", "response_time_ms": 10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_accepts_max_length_service():
+    payload = {"service": "x" * 100, "status": "healthy", "response_time_ms": 10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 201
+
+
+def test_post_metric_rejects_excessive_response_time():
+    payload = {"service": "web", "status": "healthy", "response_time_ms": 60001.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_accepts_response_time_at_limit():
+    payload = {"service": "web", "status": "healthy", "response_time_ms": 60000.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 201
+
+
+def test_post_metric_rejects_negative_timestamp():
+    payload = {
+        "service": "web",
+        "status": "healthy",
+        "response_time_ms": 10.0,
+        "timestamp": -1.0,
+    }
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 422
+
+
+def test_post_metric_accepts_all_allowed_statuses():
+    for status in ("healthy", "unhealthy", "degraded", "unknown"):
+        resp = client.post(
+            "/metrics",
+            json={"service": "web", "status": status, "response_time_ms": 1.0},
+        )
+        assert resp.status_code == 201, f"status={status} failed"
+
+
+def test_post_metric_strips_whitespace_in_service():
+    payload = {"service": "  web  ", "status": "healthy", "response_time_ms": 10.0}
+    resp = client.post("/metrics", json=payload)
+    assert resp.status_code == 201
+    assert resp.json()["service"] == "web"
+
+
+def test_delete_metrics_rejects_overlong_service():
+    resp = client.delete("/metrics?service=" + "x" * 101)
+    assert resp.status_code == 422
+
+
+def test_delete_metrics_rejects_empty_service():
+    resp = client.delete("/metrics?service=")
+    assert resp.status_code == 422
