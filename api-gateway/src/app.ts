@@ -28,6 +28,8 @@ app.get("/api/metrics", async (req: Request, res: Response) => {
   try {
     const params = new URLSearchParams();
     if (req.query.service) params.set("service", String(req.query.service));
+    if (req.query.limit !== undefined) params.set("limit", String(req.query.limit));
+    if (req.query.offset !== undefined) params.set("offset", String(req.query.offset));
     const qs = params.toString();
     const url = qs
       ? `${ANALYTICS_URL}/metrics?${qs}`
@@ -35,10 +37,15 @@ app.get("/api/metrics", async (req: Request, res: Response) => {
     const resp = await axios.get(url, { timeout: PROXY_TIMEOUT });
     res.json(resp.data);
   } catch (err) {
-    const message =
-      err instanceof AxiosError
-        ? err.message
-        : "Unknown error";
+    if (err instanceof AxiosError && err.response) {
+      logger.warn("Analytics returned error", {
+        status: err.response.status,
+        data: err.response.data,
+      });
+      res.status(err.response.status).json(err.response.data);
+      return;
+    }
+    const message = err instanceof AxiosError ? err.message : "Unknown error";
     logger.error("Failed to fetch metrics", { error: message });
     res.status(502).json({ error: "Analytics service unavailable", detail: message });
   }

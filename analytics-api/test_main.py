@@ -46,7 +46,11 @@ def test_post_metric_zero_response_time():
 def test_get_metrics_empty():
     resp = client.get("/metrics")
     assert resp.status_code == 200
-    assert resp.json()["count"] == 0
+    data = resp.json()
+    assert data["count"] == 0
+    assert data["total"] == 0
+    assert data["offset"] == 0
+    assert data["metrics"] == []
 
 
 def test_get_metrics_filtered():
@@ -56,7 +60,71 @@ def test_get_metrics_filtered():
     assert resp.status_code == 200
     data = resp.json()
     assert data["count"] == 1
+    assert data["total"] == 1
     assert data["metrics"][0]["service"] == "api"
+
+
+def test_get_metrics_pagination_basic():
+    for i in range(5):
+        client.post(
+            "/metrics",
+            json={"service": f"svc{i}", "status": "healthy", "response_time_ms": float(i)},
+        )
+    resp = client.get("/metrics?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 5
+    assert data["count"] == 2
+    assert data["limit"] == 2
+    assert data["offset"] == 1
+    services = [m["service"] for m in data["metrics"]]
+    assert services == ["svc1", "svc2"]
+
+
+def test_get_metrics_offset_beyond_total_returns_empty():
+    client.post("/metrics", json={"service": "only", "status": "healthy", "response_time_ms": 1})
+    resp = client.get("/metrics?offset=999")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["count"] == 0
+    assert data["metrics"] == []
+
+
+def test_get_metrics_rejects_negative_limit():
+    resp = client.get("/metrics?limit=-1")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_rejects_zero_limit():
+    resp = client.get("/metrics?limit=0")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_rejects_limit_above_max():
+    resp = client.get("/metrics?limit=99999")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_rejects_negative_offset():
+    resp = client.get("/metrics?offset=-1")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_filter_then_paginate():
+    for i in range(4):
+        client.post(
+            "/metrics",
+            json={"service": "target", "status": "healthy", "response_time_ms": float(i)},
+        )
+    client.post("/metrics", json={"service": "other", "status": "healthy", "response_time_ms": 99})
+    resp = client.get("/metrics?service=target&limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 4
+    assert data["count"] == 2
+    services = {m["service"] for m in data["metrics"]}
+    assert services == {"target"}
 
 
 def test_summary():

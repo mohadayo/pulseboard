@@ -134,8 +134,34 @@ Response:
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | POST | `/metrics` | Record a health check metric |
-| GET | `/metrics` | List metrics (optional `?service=` filter) |
+| GET | `/metrics` | List metrics (`?service=`, `?limit=`, `?offset=`） |
+| DELETE | `/metrics?service=` | サービス名指定で対象メトリクスを削除 |
 | GET | `/metrics/summary` | Per-service summary statistics |
+
+#### List Metrics (paginated)
+
+```bash
+# デフォルト（METRICS_DEFAULT_LIMIT 件まで）
+curl http://localhost:8001/metrics
+
+# limit / offset 指定
+curl "http://localhost:8001/metrics?limit=20&offset=40"
+
+# サービス絞り込み + ページネーション
+curl "http://localhost:8001/metrics?service=web&limit=10"
+```
+
+レスポンス:
+
+```json
+{
+  "count": 20,
+  "total": 137,
+  "limit": 20,
+  "offset": 40,
+  "metrics": [{"service":"web","status":"healthy","response_time_ms":42.5,"timestamp":1700000000.0}]
+}
+```
 
 ### Health Checker (port 8002)
 
@@ -156,6 +182,9 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `ANALYTICS_URL` | `http://localhost:8001` | Analytics API URL (used by Gateway and Checker) |
 | `CHECKER_URL` | `http://localhost:8002` | Health Checker URL (used by Gateway) |
 | `LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARNING, ERROR) |
+| `MAX_RECORDS` | `10000` | Analytics API: 保存するメトリクスの最大件数 |
+| `METRICS_DEFAULT_LIMIT` | `100` | Analytics API: `GET /metrics` のデフォルト返却件数 |
+| `METRICS_MAX_LIMIT` | `1000` | Analytics API: `GET /metrics` の `limit` 上限 |
 
 ## Testing
 
