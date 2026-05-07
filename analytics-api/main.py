@@ -20,6 +20,8 @@ app = FastAPI(title="PulseBoard Analytics API", version="1.0.0")
 MAX_RECORDS = int(os.getenv("MAX_RECORDS", "10000"))
 MAX_SERVICE_LENGTH = 100
 MAX_RESPONSE_TIME_MS = 60_000.0
+METRICS_DEFAULT_LIMIT = max(1, int(os.getenv("METRICS_DEFAULT_LIMIT", "100")))
+METRICS_MAX_LIMIT = max(METRICS_DEFAULT_LIMIT, int(os.getenv("METRICS_MAX_LIMIT", "1000")))
 ALLOWED_STATUSES = ("healthy", "unhealthy", "degraded", "unknown")
 StatusLiteral = Literal["healthy", "unhealthy", "degraded", "unknown"]
 
@@ -144,12 +146,33 @@ def post_metric(payload: MetricPayload):
 
 
 @app.get("/metrics")
-def get_metrics(service: str | None = None):
+def get_metrics(
+    service: str | None = None,
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+):
     if service:
         records = store.get_by_service(service)
     else:
         records = store.get_all()
-    return {"count": len(records), "metrics": [r.__dict__ for r in records]}
+    total = len(records)
+    page = records[offset:offset + limit]
+    return {
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "metrics": [r.__dict__ for r in page],
+    }
 
 
 @app.delete("/metrics")
