@@ -134,7 +134,7 @@ Response:
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | POST | `/metrics` | Record a health check metric |
-| GET | `/metrics` | List metrics (`?service=`, `?limit=`, `?offset=`） |
+| GET | `/metrics` | List metrics (`?service=`, `?since=`, `?until=`, `?limit=`, `?offset=`） |
 | DELETE | `/metrics?service=` | サービス名指定で対象メトリクスを削除 |
 | GET | `/metrics/summary` | Per-service summary statistics |
 
@@ -149,7 +149,15 @@ curl "http://localhost:8001/metrics?limit=20&offset=40"
 
 # サービス絞り込み + ページネーション
 curl "http://localhost:8001/metrics?service=web&limit=10"
+
+# 時刻範囲指定（Unix timestamp、since 以降 / until 以前）
+curl "http://localhost:8001/metrics?since=1700000000&until=1700003600"
+
+# 時刻範囲 + サービス絞り込みの組合せ
+curl "http://localhost:8001/metrics?service=web&since=1700000000"
 ```
+
+`since > until` の場合は 400、負値・非有限値は 422 で拒否される。
 
 レスポンス:
 
