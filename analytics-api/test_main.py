@@ -127,6 +127,70 @@ def test_get_metrics_filter_then_paginate():
     assert services == {"target"}
 
 
+def test_get_metrics_filter_since():
+    client.post("/metrics", json={"service": "old", "status": "healthy", "response_time_ms": 1, "timestamp": 1000.0})
+    client.post("/metrics", json={"service": "mid", "status": "healthy", "response_time_ms": 1, "timestamp": 2000.0})
+    client.post("/metrics", json={"service": "new", "status": "healthy", "response_time_ms": 1, "timestamp": 3000.0})
+    resp = client.get("/metrics?since=2000")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    services = {m["service"] for m in data["metrics"]}
+    assert services == {"mid", "new"}
+
+
+def test_get_metrics_filter_until():
+    client.post("/metrics", json={"service": "old", "status": "healthy", "response_time_ms": 1, "timestamp": 1000.0})
+    client.post("/metrics", json={"service": "mid", "status": "healthy", "response_time_ms": 1, "timestamp": 2000.0})
+    client.post("/metrics", json={"service": "new", "status": "healthy", "response_time_ms": 1, "timestamp": 3000.0})
+    resp = client.get("/metrics?until=2000")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    services = {m["service"] for m in data["metrics"]}
+    assert services == {"old", "mid"}
+
+
+def test_get_metrics_filter_since_and_until():
+    client.post("/metrics", json={"service": "a", "status": "healthy", "response_time_ms": 1, "timestamp": 1000.0})
+    client.post("/metrics", json={"service": "b", "status": "healthy", "response_time_ms": 1, "timestamp": 2000.0})
+    client.post("/metrics", json={"service": "c", "status": "healthy", "response_time_ms": 1, "timestamp": 3000.0})
+    client.post("/metrics", json={"service": "d", "status": "healthy", "response_time_ms": 1, "timestamp": 4000.0})
+    resp = client.get("/metrics?since=1500&until=3500")
+    assert resp.status_code == 200
+    data = resp.json()
+    services = {m["service"] for m in data["metrics"]}
+    assert services == {"b", "c"}
+
+
+def test_get_metrics_filter_since_combined_with_service():
+    client.post("/metrics", json={"service": "x", "status": "healthy", "response_time_ms": 1, "timestamp": 1000.0})
+    client.post("/metrics", json={"service": "x", "status": "healthy", "response_time_ms": 1, "timestamp": 5000.0})
+    client.post("/metrics", json={"service": "y", "status": "healthy", "response_time_ms": 1, "timestamp": 5000.0})
+    resp = client.get("/metrics?service=x&since=2000")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["metrics"][0]["service"] == "x"
+    assert data["metrics"][0]["timestamp"] == 5000.0
+
+
+def test_get_metrics_rejects_since_greater_than_until():
+    resp = client.get("/metrics?since=3000&until=1000")
+    assert resp.status_code == 400
+    assert "since" in resp.json()["detail"].lower()
+
+
+def test_get_metrics_rejects_negative_since():
+    resp = client.get("/metrics?since=-1")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_rejects_negative_until():
+    resp = client.get("/metrics?until=-1")
+    assert resp.status_code == 422
+
+
 def test_summary():
     client.post("/metrics", json={"service": "svc1", "status": "healthy", "response_time_ms": 20})
     client.post("/metrics", json={"service": "svc1", "status": "healthy", "response_time_ms": 30})
