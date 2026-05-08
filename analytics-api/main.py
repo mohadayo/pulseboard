@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 logging.basicConfig(
@@ -91,6 +91,22 @@ class MetricsStore:
         with self._lock:
             return [r for r in self.records if r.service == service]
 
+    def filter(
+        self,
+        service: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[MetricRecord]:
+        with self._lock:
+            results = list(self.records)
+        if service is not None:
+            results = [r for r in results if r.service == service]
+        if since is not None:
+            results = [r for r in results if r.timestamp >= since]
+        if until is not None:
+            results = [r for r in results if r.timestamp <= until]
+        return results
+
     def delete_by_service(self, service: str) -> int:
         with self._lock:
             before = len(self.records)
@@ -148,6 +164,16 @@ def post_metric(payload: MetricPayload):
 @app.get("/metrics")
 def get_metrics(
     service: str | None = None,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）のレコードに絞り込む",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）のレコードに絞り込む",
+    ),
     limit: int = Query(
         default=METRICS_DEFAULT_LIMIT,
         ge=1,
@@ -160,10 +186,17 @@ def get_metrics(
         description="先頭から読み飛ばす件数",
     ),
 ):
-    if service:
-        records = store.get_by_service(service)
-    else:
-        records = store.get_all()
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    records = store.filter(service=service, since=since, until=until)
     total = len(records)
     page = records[offset:offset + limit]
     return {
