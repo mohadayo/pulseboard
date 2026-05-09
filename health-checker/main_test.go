@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -135,6 +136,70 @@ func TestCheckHandler(t *testing.T) {
 	reported := int(body["reported"].(float64))
 	if reported != 1 {
 		t.Errorf("expected 1 reported, got %d", reported)
+	}
+}
+
+func TestHealthHandler_MethodNotAllowed(t *testing.T) {
+	for _, method := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+		req := httptest.NewRequest(method, "/health", nil)
+		w := httptest.NewRecorder()
+		healthHandler(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("method %s: expected 405, got %d", method, w.Code)
+		}
+		allow := w.Header().Get("Allow")
+		if allow == "" {
+			t.Errorf("method %s: expected Allow header to be set", method)
+		}
+	}
+}
+
+func TestHealthHandler_HeadAllowed(t *testing.T) {
+	req := httptest.NewRequest("HEAD", "/health", nil)
+	w := httptest.NewRecorder()
+	healthHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for HEAD, got %d", w.Code)
+	}
+}
+
+func TestCheckHandler_MethodNotAllowed(t *testing.T) {
+	handler := makeCheckHandler(nil, "http://localhost")
+	for _, method := range []string{"PUT", "DELETE", "PATCH"} {
+		req := httptest.NewRequest(method, "/check", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("method %s: expected 405, got %d", method, w.Code)
+		}
+	}
+}
+
+func TestEnvSeconds_Default(t *testing.T) {
+	got := envSeconds("DEFINITELY_NOT_SET_TIMEOUT_VAR", 7*time.Second)
+	if got != 7*time.Second {
+		t.Errorf("expected fallback 7s, got %v", got)
+	}
+}
+
+func TestEnvSeconds_Override(t *testing.T) {
+	t.Setenv("CUSTOM_TIMEOUT_VAR", "12")
+	got := envSeconds("CUSTOM_TIMEOUT_VAR", 5*time.Second)
+	if got != 12*time.Second {
+		t.Errorf("expected 12s, got %v", got)
+	}
+}
+
+func TestEnvSeconds_InvalidFallsBack(t *testing.T) {
+	t.Setenv("BAD_TIMEOUT_VAR", "abc")
+	got := envSeconds("BAD_TIMEOUT_VAR", 4*time.Second)
+	if got != 4*time.Second {
+		t.Errorf("expected 4s fallback for invalid value, got %v", got)
+	}
+	t.Setenv("NEG_TIMEOUT_VAR", "-3")
+	got = envSeconds("NEG_TIMEOUT_VAR", 4*time.Second)
+	if got != 4*time.Second {
+		t.Errorf("expected 4s fallback for negative value, got %v", got)
 	}
 }
 

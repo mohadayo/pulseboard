@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -38,6 +39,28 @@ func GetEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func envSeconds(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return fallback
+}
+
+func methodAllowed(w http.ResponseWriter, r *http.Request, allowed ...string) bool {
+	for _, m := range allowed {
+		if r.Method == m {
+			return true
+		}
+	}
+	w.Header().Set("Allow", strings.Join(allowed, ", "))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+	return false
 }
 
 func CheckService(client *http.Client, target ServiceTarget) CheckResult {
@@ -108,6 +131,9 @@ func NewTargets() []ServiceTarget {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+	if !methodAllowed(w, r, http.MethodGet, http.MethodHead) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(HealthResponse{
 		Status:  "healthy",
@@ -117,6 +143,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func makeCheckHandler(targets []ServiceTarget, analyticsURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !methodAllowed(w, r, http.MethodGet, http.MethodPost) {
+			return
+		}
 		client := &http.Client{Timeout: 5 * time.Second}
 		results := make([]CheckResult, 0, len(targets))
 
@@ -151,16 +180,15 @@ func main() {
 	mux.HandleFunc("/check", makeCheckHandler(targets, analyticsURL))
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: envSeconds("CHECKER_READ_HEADER_TIMEOUT", 5*time.Second),
+		ReadTimeout:       envSeconds("CHECKER_READ_TIMEOUT", 15*time.Second),
+		WriteTimeout:      envSeconds("CHECKER_WRITE_TIMEOUT", 15*time.Second),
+		IdleTimeout:       envSeconds("CHECKER_IDLE_TIMEOUT", 60*time.Second),
 	}
 
-	shutdownTimeout := 30 * time.Second
-	if v := os.Getenv("SHUTDOWN_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			shutdownTimeout = time.Duration(n) * time.Second
-		}
-	}
+	shutdownTimeout := envSeconds("SHUTDOWN_TIMEOUT_SECONDS", 30*time.Second)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

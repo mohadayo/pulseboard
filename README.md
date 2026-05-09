@@ -193,6 +193,11 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `MAX_RECORDS` | `10000` | Analytics API: 保存するメトリクスの最大件数 |
 | `METRICS_DEFAULT_LIMIT` | `100` | Analytics API: `GET /metrics` のデフォルト返却件数 |
 | `METRICS_MAX_LIMIT` | `1000` | Analytics API: `GET /metrics` の `limit` 上限 |
+| `SHUTDOWN_TIMEOUT_SECONDS` | `30` | Health Checker: graceful shutdown 待機時間（秒） |
+| `CHECKER_READ_HEADER_TIMEOUT` | `5` | Health Checker: HTTP リクエストヘッダ読み取りタイムアウト（秒） |
+| `CHECKER_READ_TIMEOUT` | `15` | Health Checker: HTTP リクエスト全体の読み取りタイムアウト（秒） |
+| `CHECKER_WRITE_TIMEOUT` | `15` | Health Checker: HTTP レスポンス書き込みタイムアウト（秒） |
+| `CHECKER_IDLE_TIMEOUT` | `60` | Health Checker: keep-alive アイドルタイムアウト（秒） |
 
 ## Testing
 
