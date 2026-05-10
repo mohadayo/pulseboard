@@ -94,6 +94,7 @@ class MetricsStore:
     def filter(
         self,
         service: str | None = None,
+        status: str | None = None,
         since: float | None = None,
         until: float | None = None,
     ) -> list[MetricRecord]:
@@ -101,6 +102,8 @@ class MetricsStore:
             results = list(self.records)
         if service is not None:
             results = [r for r in results if r.service == service]
+        if status is not None:
+            results = [r for r in results if r.status == status]
         if since is not None:
             results = [r for r in results if r.timestamp >= since]
         if until is not None:
@@ -164,6 +167,10 @@ def post_metric(payload: MetricPayload):
 @app.get("/metrics")
 def get_metrics(
     service: str | None = None,
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
     since: float | None = Query(
         default=None,
         ge=0,
@@ -196,7 +203,7 @@ def get_metrics(
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
 
-    records = store.filter(service=service, since=since, until=until)
+    records = store.filter(service=service, status=status, since=since, until=until)
     total = len(records)
     page = records[offset:offset + limit]
     return {
