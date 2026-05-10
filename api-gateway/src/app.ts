@@ -28,6 +28,7 @@ app.get("/api/metrics", async (req: Request, res: Response) => {
   try {
     const params = new URLSearchParams();
     if (req.query.service) params.set("service", String(req.query.service));
+    if (req.query.status) params.set("status", String(req.query.status));
     if (req.query.since !== undefined) params.set("since", String(req.query.since));
     if (req.query.until !== undefined) params.set("until", String(req.query.until));
     if (req.query.limit !== undefined) params.set("limit", String(req.query.limit));
