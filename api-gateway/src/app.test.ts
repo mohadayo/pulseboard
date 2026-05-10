@@ -1,4 +1,5 @@
 import request from "supertest";
+import axios from "axios";
 import { app } from "./app";
 
 describe("API Gateway", () => {
@@ -16,6 +17,24 @@ describe("API Gateway", () => {
       const res = await request(app).get("/api/metrics");
       expect(res.status).toBe(502);
       expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("forwards status, service, since, until, limit, offset to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { metrics: [], total: 0 } } as never);
+      const res = await request(app).get(
+        "/api/metrics?service=web&status=unhealthy&since=1700000000&until=1800000000&limit=10&offset=2"
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).toContain("status=unhealthy");
+      expect(calledUrl).toContain("since=1700000000");
+      expect(calledUrl).toContain("until=1800000000");
+      expect(calledUrl).toContain("limit=10");
+      expect(calledUrl).toContain("offset=2");
+      spy.mockRestore();
     });
   });
 

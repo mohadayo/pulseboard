@@ -419,3 +419,41 @@ def test_delete_metrics_rejects_overlong_service():
 def test_delete_metrics_rejects_empty_service():
     resp = client.delete("/metrics?service=")
     assert resp.status_code == 422
+
+
+def test_get_metrics_filters_by_status():
+    client.post("/metrics", json={"service": "a", "status": "healthy", "response_time_ms": 1})
+    client.post("/metrics", json={"service": "b", "status": "unhealthy", "response_time_ms": 2})
+    client.post("/metrics", json={"service": "c", "status": "degraded", "response_time_ms": 3})
+    resp = client.get("/metrics?status=unhealthy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["metrics"][0]["service"] == "b"
+    assert data["metrics"][0]["status"] == "unhealthy"
+
+
+def test_get_metrics_status_combined_with_service():
+    client.post("/metrics", json={"service": "web", "status": "healthy", "response_time_ms": 1})
+    client.post("/metrics", json={"service": "web", "status": "unhealthy", "response_time_ms": 2})
+    client.post("/metrics", json={"service": "db", "status": "unhealthy", "response_time_ms": 3})
+    resp = client.get("/metrics?service=web&status=unhealthy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["metrics"][0]["service"] == "web"
+    assert data["metrics"][0]["status"] == "unhealthy"
+
+
+def test_get_metrics_rejects_invalid_status():
+    resp = client.get("/metrics?status=bogus")
+    assert resp.status_code == 422
+
+
+def test_metrics_store_filter_status_directly():
+    s = MetricsStore()
+    s.add(MetricRecord("svc", "healthy", 1.0, time.time()))
+    s.add(MetricRecord("svc", "degraded", 2.0, time.time()))
+    assert len(s.filter(status="degraded")) == 1
+    assert len(s.filter(status="healthy")) == 1
+    assert len(s.filter(status="unknown")) == 0
