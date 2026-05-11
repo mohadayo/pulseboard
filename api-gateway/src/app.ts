@@ -54,15 +54,29 @@ app.get("/api/metrics", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/metrics/summary", async (_req: Request, res: Response) => {
+app.get("/api/metrics/summary", async (req: Request, res: Response) => {
   try {
-    const resp = await axios.get(`${ANALYTICS_URL}/metrics/summary`, { timeout: PROXY_TIMEOUT });
+    const params = new URLSearchParams();
+    if (req.query.service) params.set("service", String(req.query.service));
+    if (req.query.status) params.set("status", String(req.query.status));
+    if (req.query.since !== undefined) params.set("since", String(req.query.since));
+    if (req.query.until !== undefined) params.set("until", String(req.query.until));
+    const qs = params.toString();
+    const url = qs
+      ? `${ANALYTICS_URL}/metrics/summary?${qs}`
+      : `${ANALYTICS_URL}/metrics/summary`;
+    const resp = await axios.get(url, { timeout: PROXY_TIMEOUT });
     res.json(resp.data);
   } catch (err) {
-    const message =
-      err instanceof AxiosError
-        ? err.message
-        : "Unknown error";
+    if (err instanceof AxiosError && err.response) {
+      logger.warn("Analytics returned error", {
+        status: err.response.status,
+        data: err.response.data,
+      });
+      res.status(err.response.status).json(err.response.data);
+      return;
+    }
+    const message = err instanceof AxiosError ? err.message : "Unknown error";
     logger.error("Failed to fetch summary", { error: message });
     res.status(502).json({ error: "Analytics service unavailable", detail: message });
   }
