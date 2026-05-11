@@ -119,9 +119,16 @@ class MetricsStore:
             logger.info("Deleted %d records for service=%s", deleted, service)
         return deleted
 
-    def summary(self) -> dict:
-        with self._lock:
-            records_snapshot = list(self.records)
+    def summary(
+        self,
+        service: str | None = None,
+        status: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict:
+        records_snapshot = self.filter(
+            service=service, status=status, since=since, until=until,
+        )
         services: dict[str, dict] = {}
         for r in records_snapshot:
             if r.service not in services:
@@ -234,8 +241,33 @@ def delete_metrics(
 
 
 @app.get("/metrics/summary")
-def get_summary():
-    return store.summary()
+def get_summary(
+    service: str | None = None,
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）のレコードに絞り込む",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）のレコードに絞り込む",
+    ),
+):
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+    return store.summary(service=service, status=status, since=since, until=until)
 
 
 if __name__ == "__main__":
