@@ -274,6 +274,57 @@ def test_summary_empty_store():
     assert resp.json() == {}
 
 
+def test_summary_filter_by_service():
+    client.post("/metrics", json={"service": "svc-a", "status": "healthy", "response_time_ms": 10})
+    client.post("/metrics", json={"service": "svc-a", "status": "healthy", "response_time_ms": 20})
+    client.post("/metrics", json={"service": "svc-b", "status": "unhealthy", "response_time_ms": 30})
+    resp = client.get("/metrics/summary?service=svc-a")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert list(data.keys()) == ["svc-a"]
+    assert data["svc-a"]["total_checks"] == 2
+
+
+def test_summary_filter_by_status():
+    client.post("/metrics", json={"service": "svc-a", "status": "healthy", "response_time_ms": 10})
+    client.post("/metrics", json={"service": "svc-a", "status": "unhealthy", "response_time_ms": 50})
+    resp = client.get("/metrics/summary?status=unhealthy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["svc-a"]["total_checks"] == 1
+    assert data["svc-a"]["healthy_checks"] == 0
+    assert data["svc-a"]["uptime_pct"] == 0
+
+
+def test_summary_filter_by_time_range():
+    client.post(
+        "/metrics",
+        json={"service": "svc-a", "status": "healthy", "response_time_ms": 10, "timestamp": 100.0},
+    )
+    client.post(
+        "/metrics",
+        json={"service": "svc-a", "status": "healthy", "response_time_ms": 20, "timestamp": 200.0},
+    )
+    client.post(
+        "/metrics",
+        json={"service": "svc-a", "status": "healthy", "response_time_ms": 30, "timestamp": 300.0},
+    )
+    resp = client.get("/metrics/summary?since=150&until=250")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["svc-a"]["total_checks"] == 1
+
+
+def test_summary_invalid_range():
+    resp = client.get("/metrics/summary?since=200&until=100")
+    assert resp.status_code == 400
+
+
+def test_summary_invalid_status():
+    resp = client.get("/metrics/summary?status=bogus")
+    assert resp.status_code == 422
+
+
 def test_get_metrics_unknown_service():
     resp = client.get("/metrics?service=nonexistent")
     assert resp.status_code == 200
