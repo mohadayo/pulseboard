@@ -86,6 +86,61 @@ describe("API Gateway", () => {
       expect(res.status).toBe(502);
       expect(res.body.error).toBe("Analytics service unavailable");
     });
+
+    it("propagates 4xx validation errors from analytics", async () => {
+      const err = new AxiosError("Unprocessable Entity");
+      err.response = {
+        status: 422,
+        statusText: "Unprocessable Entity",
+        headers: {},
+        config: {} as never,
+        data: { detail: [{ msg: "field required", loc: ["body", "status"] }] },
+      };
+      const spy = jest.spyOn(axios, "post").mockRejectedValueOnce(err);
+      const res = await request(app)
+        .post("/api/metrics")
+        .send({ service: "test", response_time_ms: 10 });
+      expect(res.status).toBe(422);
+      expect(res.body.detail).toBeDefined();
+      spy.mockRestore();
+    });
+  });
+
+  describe("DELETE /api/metrics", () => {
+    it("forwards service query parameter and result to analytics", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", service: "web", deleted_count: 3 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?service=web");
+      expect(res.status).toBe(200);
+      expect(res.body.deleted_count).toBe(3);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
+      spy.mockRestore();
+    });
+
+    it("propagates 4xx errors from analytics", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 422,
+        statusText: "Unprocessable Entity",
+        headers: {},
+        config: {} as never,
+        data: { detail: "service is required" },
+      };
+      const spy = jest.spyOn(axios, "delete").mockRejectedValueOnce(err);
+      const res = await request(app).delete("/api/metrics");
+      expect(res.status).toBe(422);
+      expect(res.body.detail).toContain("service is required");
+      spy.mockRestore();
+    });
+
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).delete("/api/metrics?service=web");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
   });
 
   describe("GET /api/check", () => {
