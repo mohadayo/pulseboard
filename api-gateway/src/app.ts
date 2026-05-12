@@ -87,11 +87,41 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
     const resp = await axios.post(`${ANALYTICS_URL}/metrics`, req.body, { timeout: PROXY_TIMEOUT });
     res.status(resp.status).json(resp.data);
   } catch (err) {
-    const message =
-      err instanceof AxiosError
-        ? err.message
-        : "Unknown error";
+    if (err instanceof AxiosError && err.response) {
+      logger.warn("Analytics returned error on post", {
+        status: err.response.status,
+        data: err.response.data,
+      });
+      res.status(err.response.status).json(err.response.data);
+      return;
+    }
+    const message = err instanceof AxiosError ? err.message : "Unknown error";
     logger.error("Failed to post metric", { error: message });
+    res.status(502).json({ error: "Analytics service unavailable", detail: message });
+  }
+});
+
+app.delete("/api/metrics", async (req: Request, res: Response) => {
+  try {
+    const params = new URLSearchParams();
+    if (req.query.service !== undefined) params.set("service", String(req.query.service));
+    const qs = params.toString();
+    const url = qs
+      ? `${ANALYTICS_URL}/metrics?${qs}`
+      : `${ANALYTICS_URL}/metrics`;
+    const resp = await axios.delete(url, { timeout: PROXY_TIMEOUT });
+    res.status(resp.status).json(resp.data);
+  } catch (err) {
+    if (err instanceof AxiosError && err.response) {
+      logger.warn("Analytics returned error on delete", {
+        status: err.response.status,
+        data: err.response.data,
+      });
+      res.status(err.response.status).json(err.response.data);
+      return;
+    }
+    const message = err instanceof AxiosError ? err.message : "Unknown error";
+    logger.error("Failed to delete metrics", { error: message });
     res.status(502).json({ error: "Analytics service unavailable", detail: message });
   }
 });
