@@ -508,3 +508,70 @@ def test_metrics_store_filter_status_directly():
     assert len(s.filter(status="degraded")) == 1
     assert len(s.filter(status="healthy")) == 1
     assert len(s.filter(status="unknown")) == 0
+
+
+def test_summary_includes_min_max_and_percentiles():
+    for i in range(1, 11):
+        client.post(
+            "/metrics",
+            json={"service": "svc-p", "status": "healthy", "response_time_ms": float(i * 10)},
+        )
+    resp = client.get("/metrics/summary")
+    assert resp.status_code == 200
+    data = resp.json()["svc-p"]
+    assert data["min_response_ms"] == 10.0
+    assert data["max_response_ms"] == 100.0
+    assert data["p50_response_ms"] == 55.0
+    assert data["p95_response_ms"] >= 90.0
+    assert data["p99_response_ms"] >= 95.0
+
+
+def test_summary_percentile_single_sample():
+    client.post("/metrics", json={"service": "single", "status": "healthy", "response_time_ms": 42.0})
+    resp = client.get("/metrics/summary")
+    data = resp.json()["single"]
+    assert data["min_response_ms"] == 42.0
+    assert data["max_response_ms"] == 42.0
+    assert data["p50_response_ms"] == 42.0
+    assert data["p95_response_ms"] == 42.0
+    assert data["p99_response_ms"] == 42.0
+
+
+def test_get_metrics_sort_by_response_time_asc():
+    for v in [50.0, 10.0, 30.0]:
+        client.post("/metrics", json={"service": "svc", "status": "healthy", "response_time_ms": v})
+    resp = client.get("/metrics?sort=response_time_ms&order=asc")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sort"] == "response_time_ms"
+    assert data["order"] == "asc"
+    rts = [m["response_time_ms"] for m in data["metrics"]]
+    assert rts == [10.0, 30.0, 50.0]
+
+
+def test_get_metrics_sort_by_response_time_desc():
+    for v in [50.0, 10.0, 30.0]:
+        client.post("/metrics", json={"service": "svc", "status": "healthy", "response_time_ms": v})
+    resp = client.get("/metrics?sort=response_time_ms&order=desc")
+    assert resp.status_code == 200
+    rts = [m["response_time_ms"] for m in resp.json()["metrics"]]
+    assert rts == [50.0, 30.0, 10.0]
+
+
+def test_get_metrics_sort_by_service_alpha():
+    client.post("/metrics", json={"service": "zebra", "status": "healthy", "response_time_ms": 1.0})
+    client.post("/metrics", json={"service": "apple", "status": "healthy", "response_time_ms": 2.0})
+    client.post("/metrics", json={"service": "mango", "status": "healthy", "response_time_ms": 3.0})
+    resp = client.get("/metrics?sort=service")
+    services = [m["service"] for m in resp.json()["metrics"]]
+    assert services == ["apple", "mango", "zebra"]
+
+
+def test_get_metrics_rejects_invalid_sort_field():
+    resp = client.get("/metrics?sort=bogus")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_rejects_invalid_sort_order():
+    resp = client.get("/metrics?order=sideways")
+    assert resp.status_code == 422
