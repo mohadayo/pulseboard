@@ -24,6 +24,22 @@ METRICS_DEFAULT_LIMIT = max(1, int(os.getenv("METRICS_DEFAULT_LIMIT", "100")))
 METRICS_MAX_LIMIT = max(METRICS_DEFAULT_LIMIT, int(os.getenv("METRICS_MAX_LIMIT", "1000")))
 ALLOWED_STATUSES = ("healthy", "unhealthy", "degraded", "unknown")
 StatusLiteral = Literal["healthy", "unhealthy", "degraded", "unknown"]
+SortFieldLiteral = Literal["timestamp", "service", "response_time_ms", "status"]
+SortOrderLiteral = Literal["asc", "desc"]
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (pct / 100.0) * (len(sorted_values) - 1)
+    lower = int(math.floor(rank))
+    upper = int(math.ceil(rank))
+    if lower == upper:
+        return sorted_values[lower]
+    weight = rank - lower
+    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
 
 
 class MetricPayload(BaseModel):
@@ -140,12 +156,19 @@ class MetricsStore:
             s["times"].append(r.response_time_ms)
         result = {}
         for svc, data in services.items():
-            avg = sum(data["times"]) / len(data["times"]) if data["times"] else 0
+            times = data["times"]
+            avg = sum(times) / len(times) if times else 0
+            sorted_times = sorted(times)
             result[svc] = {
                 "total_checks": data["total"],
                 "healthy_checks": data["healthy"],
                 "uptime_pct": round(data["healthy"] / data["total"] * 100, 2) if data["total"] else 0,
                 "avg_response_ms": round(avg, 2),
+                "min_response_ms": round(sorted_times[0], 2) if sorted_times else 0.0,
+                "max_response_ms": round(sorted_times[-1], 2) if sorted_times else 0.0,
+                "p50_response_ms": round(_percentile(sorted_times, 50), 2),
+                "p95_response_ms": round(_percentile(sorted_times, 95), 2),
+                "p99_response_ms": round(_percentile(sorted_times, 99), 2),
             }
         return result
 
@@ -199,6 +222,14 @@ def get_metrics(
         ge=0,
         description="先頭から読み飛ばす件数",
     ),
+    sort: SortFieldLiteral = Query(
+        default="timestamp",
+        description="ソートフィールド（timestamp / service / response_time_ms / status）",
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="ソート順（asc / desc）",
+    ),
 ):
     if since is not None and until is not None and since > until:
         raise HTTPException(
@@ -211,6 +242,8 @@ def get_metrics(
         raise HTTPException(status_code=400, detail="until must be a finite number")
 
     records = store.filter(service=service, status=status, since=since, until=until)
+    reverse = order == "desc"
+    records = sorted(records, key=lambda r: getattr(r, sort), reverse=reverse)
     total = len(records)
     page = records[offset:offset + limit]
     return {
@@ -218,6 +251,8 @@ def get_metrics(
         "total": total,
         "limit": limit,
         "offset": offset,
+        "sort": sort,
+        "order": order,
         "metrics": [r.__dict__ for r in page],
     }
 
