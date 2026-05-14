@@ -78,6 +78,48 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("GET /api/metrics/services", () => {
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/services");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("forwards status/since/until/sort/order/limit/offset to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { services: [], total: 0 } } as never);
+      const res = await request(app).get(
+        "/api/metrics/services?status=healthy&since=100&until=200&sort=last_seen&order=desc&limit=5&offset=1"
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("status=healthy");
+      expect(calledUrl).toContain("since=100");
+      expect(calledUrl).toContain("until=200");
+      expect(calledUrl).toContain("sort=last_seen");
+      expect(calledUrl).toContain("order=desc");
+      expect(calledUrl).toContain("limit=5");
+      expect(calledUrl).toContain("offset=1");
+      spy.mockRestore();
+    });
+
+    it("propagates 4xx errors from analytics", async () => {
+      const err = new AxiosError("Unprocessable Entity");
+      err.response = {
+        status: 422,
+        statusText: "Unprocessable Entity",
+        headers: {},
+        config: {} as never,
+        data: { detail: "Input should be one of" },
+      };
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/services?sort=bogus");
+      expect(res.status).toBe(422);
+      spy.mockRestore();
+    });
+  });
+
   describe("POST /api/metrics", () => {
     it("returns 502 when analytics is down", async () => {
       const res = await request(app)

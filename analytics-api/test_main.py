@@ -575,3 +575,132 @@ def test_get_metrics_rejects_invalid_sort_field():
 def test_get_metrics_rejects_invalid_sort_order():
     resp = client.get("/metrics?order=sideways")
     assert resp.status_code == 422
+
+
+def test_list_services_empty():
+    resp = client.get("/metrics/services")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["services"] == []
+    assert data["sort"] == "service"
+
+
+def test_list_services_distinct_aggregation():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 2.0, "timestamp": 200.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "healthy", "response_time_ms": 3.0, "timestamp": 150.0,
+    })
+    resp = client.get("/metrics/services")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    by_name = {s["service"]: s for s in data["services"]}
+    assert by_name["web"]["total_checks"] == 2
+    assert by_name["web"]["first_seen"] == 100.0
+    assert by_name["web"]["last_seen"] == 200.0
+    assert by_name["web"]["latest_status"] == "unhealthy"
+    assert by_name["db"]["total_checks"] == 1
+    assert by_name["db"]["latest_status"] == "healthy"
+
+
+def test_list_services_default_sorted_by_service_asc():
+    client.post("/metrics", json={"service": "zebra", "status": "healthy", "response_time_ms": 1.0})
+    client.post("/metrics", json={"service": "apple", "status": "healthy", "response_time_ms": 1.0})
+    client.post("/metrics", json={"service": "mango", "status": "healthy", "response_time_ms": 1.0})
+    resp = client.get("/metrics/services")
+    names = [s["service"] for s in resp.json()["services"]]
+    assert names == ["apple", "mango", "zebra"]
+
+
+def test_list_services_sort_by_total_checks_desc():
+    for _ in range(3):
+        client.post("/metrics", json={
+            "service": "busy", "status": "healthy", "response_time_ms": 1.0,
+        })
+    client.post("/metrics", json={
+        "service": "quiet", "status": "healthy", "response_time_ms": 1.0,
+    })
+    resp = client.get("/metrics/services?sort=total_checks&order=desc")
+    names = [s["service"] for s in resp.json()["services"]]
+    assert names == ["busy", "quiet"]
+
+
+def test_list_services_sort_by_last_seen_desc():
+    client.post("/metrics", json={
+        "service": "old", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "new", "status": "healthy", "response_time_ms": 1.0, "timestamp": 200.0,
+    })
+    resp = client.get("/metrics/services?sort=last_seen&order=desc")
+    names = [s["service"] for s in resp.json()["services"]]
+    assert names == ["new", "old"]
+
+
+def test_list_services_filter_by_status():
+    client.post("/metrics", json={
+        "service": "down", "status": "unhealthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "ok", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?status=unhealthy")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "down"
+
+
+def test_list_services_time_range_filter():
+    client.post("/metrics", json={
+        "service": "old", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "new", "status": "healthy", "response_time_ms": 1.0, "timestamp": 500.0,
+    })
+    resp = client.get("/metrics/services?since=400")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "new"
+
+
+def test_list_services_pagination():
+    for name in ["a", "b", "c", "d", "e"]:
+        client.post("/metrics", json={
+            "service": name, "status": "healthy", "response_time_ms": 1.0,
+        })
+    resp = client.get("/metrics/services?limit=2&offset=1")
+    data = resp.json()
+    assert data["count"] == 2
+    assert data["total"] == 5
+    assert [s["service"] for s in data["services"]] == ["b", "c"]
+
+
+def test_list_services_rejects_invalid_sort():
+    resp = client.get("/metrics/services?sort=bogus")
+    assert resp.status_code == 422
+
+
+def test_list_services_rejects_until_before_since():
+    resp = client.get("/metrics/services?since=200&until=100")
+    assert resp.status_code == 400
+
+
+def test_list_services_latest_status_uses_most_recent_timestamp():
+    # Out-of-order arrival: later timestamp should win even if posted first
+    client.post("/metrics", json={
+        "service": "svc", "status": "healthy", "response_time_ms": 1.0, "timestamp": 200.0,
+    })
+    client.post("/metrics", json={
+        "service": "svc", "status": "unhealthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services")
+    data = resp.json()
+    assert data["services"][0]["latest_status"] == "healthy"
+    assert data["services"][0]["last_seen"] == 200.0
+    assert data["services"][0]["first_seen"] == 100.0
