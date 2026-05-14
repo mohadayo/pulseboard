@@ -26,6 +26,9 @@ ALLOWED_STATUSES = ("healthy", "unhealthy", "degraded", "unknown")
 StatusLiteral = Literal["healthy", "unhealthy", "degraded", "unknown"]
 SortFieldLiteral = Literal["timestamp", "service", "response_time_ms", "status"]
 SortOrderLiteral = Literal["asc", "desc"]
+ServiceSortFieldLiteral = Literal[
+    "service", "total_checks", "last_seen", "first_seen", "latest_status"
+]
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
@@ -303,6 +306,93 @@ def get_summary(
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
     return store.summary(service=service, status=status, since=since, until=until)
+
+
+@app.get("/metrics/services")
+def list_services(
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"最新ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ集計",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ集計",
+    ),
+    sort: ServiceSortFieldLiteral = Query(
+        default="service",
+        description=(
+            "ソートフィールド（service / total_checks / last_seen / first_seen / latest_status）"
+        ),
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="ソート順（asc / desc）",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+):
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    records = store.filter(since=since, until=until)
+    by_service: dict[str, dict] = {}
+    for r in records:
+        existing = by_service.get(r.service)
+        if existing is None:
+            by_service[r.service] = {
+                "service": r.service,
+                "total_checks": 1,
+                "first_seen": r.timestamp,
+                "last_seen": r.timestamp,
+                "latest_status": r.status,
+            }
+            continue
+        existing["total_checks"] += 1
+        if r.timestamp < existing["first_seen"]:
+            existing["first_seen"] = r.timestamp
+        if r.timestamp >= existing["last_seen"]:
+            existing["last_seen"] = r.timestamp
+            existing["latest_status"] = r.status
+
+    services = list(by_service.values())
+    if status is not None:
+        services = [s for s in services if s["latest_status"] == status]
+
+    reverse = order == "desc"
+    services.sort(key=lambda s: s[sort], reverse=reverse)
+    total = len(services)
+    page = services[offset:offset + limit]
+    return {
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "sort": sort,
+        "order": order,
+        "services": page,
+    }
 
 
 if __name__ == "__main__":
