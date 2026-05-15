@@ -704,3 +704,105 @@ def test_list_services_latest_status_uses_most_recent_timestamp():
     assert data["services"][0]["latest_status"] == "healthy"
     assert data["services"][0]["last_seen"] == 200.0
     assert data["services"][0]["first_seen"] == 100.0
+
+
+def test_post_metrics_batch_all_valid():
+    payload = {
+        "metrics": [
+            {"service": "web", "status": "healthy", "response_time_ms": 10.0},
+            {"service": "db", "status": "unhealthy", "response_time_ms": 200.0},
+            {"service": "cache", "status": "healthy", "response_time_ms": 5.0},
+        ],
+    }
+    resp = client.post("/metrics/batch", json=payload)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["accepted_count"] == 3
+    assert data["rejected_count"] == 0
+    assert len(data["accepted"]) == 3
+    assert data["rejected"] == []
+    # Records actually persisted
+    list_resp = client.get("/metrics")
+    assert list_resp.json()["total"] == 3
+
+
+def test_post_metrics_batch_partial_success_returns_207():
+    payload = {
+        "metrics": [
+            {"service": "web", "status": "healthy", "response_time_ms": 10.0},
+            {"service": "", "status": "healthy", "response_time_ms": 5.0},  # invalid
+            {"service": "db", "status": "bogus", "response_time_ms": 1.0},  # invalid
+        ],
+    }
+    resp = client.post("/metrics/batch", json=payload)
+    assert resp.status_code == 207
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["accepted_count"] == 1
+    assert data["rejected_count"] == 2
+    rejected_indexes = [r["index"] for r in data["rejected"]]
+    assert rejected_indexes == [1, 2]
+    list_resp = client.get("/metrics")
+    assert list_resp.json()["total"] == 1
+
+
+def test_post_metrics_batch_all_invalid_returns_400():
+    payload = {
+        "metrics": [
+            {"service": "", "status": "healthy", "response_time_ms": 10.0},
+            {"service": "db", "status": "wrong", "response_time_ms": 1.0},
+        ],
+    }
+    resp = client.post("/metrics/batch", json=payload)
+    assert resp.status_code == 400
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["accepted_count"] == 0
+    assert data["rejected_count"] == 2
+    list_resp = client.get("/metrics")
+    assert list_resp.json()["total"] == 0
+
+
+def test_post_metrics_batch_empty_array_rejected():
+    resp = client.post("/metrics/batch", json={"metrics": []})
+    assert resp.status_code == 400
+
+
+def test_post_metrics_batch_missing_metrics_field():
+    resp = client.post("/metrics/batch", json={})
+    assert resp.status_code == 400
+
+
+def test_post_metrics_batch_non_object_body():
+    resp = client.post("/metrics/batch", json=[1, 2, 3])
+    assert resp.status_code == 400
+
+
+def test_post_metrics_batch_non_object_item():
+    resp = client.post("/metrics/batch", json={"metrics": ["not-an-object"]})
+    assert resp.status_code == 400
+    data = resp.json()
+    assert data["rejected_count"] == 1
+    assert data["rejected"][0]["index"] == 0
+
+
+def test_post_metrics_batch_exceeds_max_size():
+    metrics = [
+        {"service": f"s{i}", "status": "healthy", "response_time_ms": 1.0}
+        for i in range(501)
+    ]
+    resp = client.post("/metrics/batch", json={"metrics": metrics})
+    assert resp.status_code == 400
+    assert "at most" in resp.json()["detail"]
+
+
+def test_post_metrics_batch_respects_max_size():
+    metrics = [
+        {"service": f"s{i}", "status": "healthy", "response_time_ms": 1.0}
+        for i in range(500)
+    ]
+    resp = client.post("/metrics/batch", json={"metrics": metrics})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["accepted_count"] == 500
