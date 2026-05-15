@@ -6,8 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -22,6 +22,7 @@ MAX_SERVICE_LENGTH = 100
 MAX_RESPONSE_TIME_MS = 60_000.0
 METRICS_DEFAULT_LIMIT = max(1, int(os.getenv("METRICS_DEFAULT_LIMIT", "100")))
 METRICS_MAX_LIMIT = max(METRICS_DEFAULT_LIMIT, int(os.getenv("METRICS_MAX_LIMIT", "1000")))
+BATCH_MAX_SIZE = max(1, int(os.getenv("METRICS_BATCH_MAX_SIZE", "500")))
 ALLOWED_STATUSES = ("healthy", "unhealthy", "degraded", "unknown")
 StatusLiteral = Literal["healthy", "unhealthy", "degraded", "unknown"]
 SortFieldLiteral = Literal["timestamp", "service", "response_time_ms", "status"]
@@ -195,6 +196,84 @@ def post_metric(payload: MetricPayload):
     )
     store.add(record)
     return {"recorded": True, "service": record.service, "timestamp": record.timestamp}
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc", ()) if p != "")
+        msg = err.get("msg", "invalid")
+        if loc:
+            parts.append(f"{loc}: {msg}")
+        else:
+            parts.append(msg)
+    return "; ".join(parts) if parts else "invalid payload"
+
+
+@app.post("/metrics/batch")
+async def post_metrics_batch(request: Request, response: Response):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    metrics = body.get("metrics")
+    if not isinstance(metrics, list):
+        raise HTTPException(status_code=400, detail="Field 'metrics' must be an array")
+    if len(metrics) == 0:
+        raise HTTPException(status_code=400, detail="Field 'metrics' must not be empty")
+    if len(metrics) > BATCH_MAX_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Field 'metrics' must contain at most {BATCH_MAX_SIZE} items",
+        )
+
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    for index, item in enumerate(metrics):
+        if not isinstance(item, dict):
+            rejected.append({"index": index, "error": "item must be a JSON object"})
+            continue
+        try:
+            payload = MetricPayload.model_validate(item)
+        except ValidationError as e:
+            rejected.append({"index": index, "error": _format_validation_error(e)})
+            continue
+        record = MetricRecord(
+            service=payload.service,
+            status=payload.status,
+            response_time_ms=payload.response_time_ms,
+            timestamp=payload.timestamp or time.time(),
+        )
+        store.add(record)
+        accepted.append({
+            "index": index,
+            "service": record.service,
+            "timestamp": record.timestamp,
+        })
+
+    total = len(metrics)
+    if len(rejected) == total:
+        status_code = 400
+    elif rejected:
+        status_code = 207  # Multi-Status: partial success
+    else:
+        status_code = 201
+
+    logger.info(
+        "Batch ingest: total=%d accepted=%d rejected=%d",
+        total, len(accepted), len(rejected),
+    )
+
+    response.status_code = status_code
+    return {
+        "total": total,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "accepted": accepted,
+        "rejected": rejected,
+    }
 
 
 @app.get("/metrics")
