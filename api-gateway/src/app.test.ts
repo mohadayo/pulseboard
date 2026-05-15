@@ -148,6 +148,73 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("POST /api/metrics/batch", () => {
+    it("forwards body to analytics and propagates 207 partial success", async () => {
+      const spy = jest.spyOn(axios, "post").mockResolvedValueOnce({
+        status: 207,
+        data: {
+          total: 2,
+          accepted_count: 1,
+          rejected_count: 1,
+          accepted: [{ index: 0, service: "web", timestamp: 1700000000 }],
+          rejected: [{ index: 1, error: "service: must not be blank" }],
+        },
+      } as never);
+      const res = await request(app)
+        .post("/api/metrics/batch")
+        .send({
+          metrics: [
+            { service: "web", status: "healthy", response_time_ms: 10 },
+            { service: "", status: "healthy", response_time_ms: 5 },
+          ],
+        });
+      expect(res.status).toBe(207);
+      expect(res.body.accepted_count).toBe(1);
+      expect(res.body.rejected_count).toBe(1);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/batch");
+      spy.mockRestore();
+    });
+
+    it("propagates 201 when all entries accepted", async () => {
+      const spy = jest.spyOn(axios, "post").mockResolvedValueOnce({
+        status: 201,
+        data: { total: 1, accepted_count: 1, rejected_count: 0, accepted: [], rejected: [] },
+      } as never);
+      const res = await request(app)
+        .post("/api/metrics/batch")
+        .send({ metrics: [{ service: "web", status: "healthy", response_time_ms: 1 }] });
+      expect(res.status).toBe(201);
+      expect(res.body.accepted_count).toBe(1);
+      spy.mockRestore();
+    });
+
+    it("propagates 400 from analytics on invalid batch", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        config: {} as never,
+        data: { detail: "Field 'metrics' must not be empty" },
+      };
+      const spy = jest.spyOn(axios, "post").mockRejectedValueOnce(err);
+      const res = await request(app)
+        .post("/api/metrics/batch")
+        .send({ metrics: [] });
+      expect(res.status).toBe(400);
+      spy.mockRestore();
+    });
+
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app)
+        .post("/api/metrics/batch")
+        .send({ metrics: [{ service: "web", status: "healthy", response_time_ms: 1 }] });
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+  });
+
   describe("DELETE /api/metrics", () => {
     it("forwards service query parameter and result to analytics", async () => {
       const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
