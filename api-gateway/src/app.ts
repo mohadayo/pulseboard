@@ -132,6 +132,32 @@ app.post("/api/metrics", async (req: Request, res: Response) => {
   }
 });
 
+app.post("/api/metrics/batch", async (req: Request, res: Response) => {
+  try {
+    const resp = await axios.post(
+      `${ANALYTICS_URL}/metrics/batch`,
+      req.body,
+      {
+        timeout: PROXY_TIMEOUT,
+        validateStatus: (status: number) => status >= 200 && status < 300,
+      }
+    );
+    res.status(resp.status).json(resp.data);
+  } catch (err) {
+    if (err instanceof AxiosError && err.response) {
+      logger.warn("Analytics returned error on batch", {
+        status: err.response.status,
+        data: err.response.data,
+      });
+      res.status(err.response.status).json(err.response.data);
+      return;
+    }
+    const message = err instanceof AxiosError ? err.message : "Unknown error";
+    logger.error("Failed to post metric batch", { error: message });
+    res.status(502).json({ error: "Analytics service unavailable", detail: message });
+  }
+});
+
 app.delete("/api/metrics", async (req: Request, res: Response) => {
   try {
     const params = new URLSearchParams();
