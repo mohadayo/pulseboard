@@ -33,6 +33,8 @@ app.get("/api/metrics", async (req: Request, res: Response) => {
     if (req.query.until !== undefined) params.set("until", String(req.query.until));
     if (req.query.limit !== undefined) params.set("limit", String(req.query.limit));
     if (req.query.offset !== undefined) params.set("offset", String(req.query.offset));
+    if (req.query.sort) params.set("sort", String(req.query.sort));
+    if (req.query.order) params.set("order", String(req.query.order));
     const qs = params.toString();
     const url = qs
       ? `${ANALYTICS_URL}/metrics?${qs}`

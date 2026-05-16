@@ -36,6 +36,35 @@ describe("API Gateway", () => {
       expect(calledUrl).toContain("offset=2");
       spy.mockRestore();
     });
+
+    it("forwards sort and order to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { metrics: [], total: 0 } } as never);
+      const res = await request(app).get(
+        "/api/metrics?sort=response_time_ms&order=desc"
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("sort=response_time_ms");
+      expect(calledUrl).toContain("order=desc");
+      spy.mockRestore();
+    });
+
+    it("propagates 4xx errors from analytics on invalid sort", async () => {
+      const err = new AxiosError("Unprocessable Entity");
+      err.response = {
+        status: 422,
+        statusText: "Unprocessable Entity",
+        headers: {},
+        config: {} as never,
+        data: { detail: "Input should be one of" },
+      };
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics?sort=bogus");
+      expect(res.status).toBe(422);
+      spy.mockRestore();
+    });
   });
 
   describe("GET /api/metrics/summary", () => {
