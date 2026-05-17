@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -141,25 +143,37 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// checkAndReportTargets はターゲット群を並列にチェックし、結果を入力順で返す。
+// 各ターゲットの metrics 報告も並列に実行する。
+func checkAndReportTargets(client *http.Client, targets []ServiceTarget, analyticsURL string) ([]CheckResult, int) {
+	results := make([]CheckResult, len(targets))
+	var reported int32
+
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Add(1)
+		go func(idx int, target ServiceTarget) {
+			defer wg.Done()
+			result := CheckService(client, target)
+			results[idx] = result
+			if err := ReportMetric(client, analyticsURL, result); err == nil {
+				atomic.AddInt32(&reported, 1)
+			}
+		}(i, t)
+	}
+	wg.Wait()
+
+	return results, int(reported)
+}
+
 func makeCheckHandler(targets []ServiceTarget, analyticsURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !methodAllowed(w, r, http.MethodGet, http.MethodPost) {
 			return
 		}
 		client := &http.Client{Timeout: 5 * time.Second}
-		results := make([]CheckResult, 0, len(targets))
 
-		for _, t := range targets {
-			result := CheckService(client, t)
-			results = append(results, result)
-		}
-
-		reported := 0
-		for _, result := range results {
-			if err := ReportMetric(client, analyticsURL, result); err == nil {
-				reported++
-			}
-		}
+		results, reported := checkAndReportTargets(client, targets, analyticsURL)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
