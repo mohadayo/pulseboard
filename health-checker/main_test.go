@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -257,6 +258,113 @@ func TestCheckHandler_ReportingFails(t *testing.T) {
 	reported := int(body["reported"].(float64))
 	if reported != 0 {
 		t.Errorf("expected 0 reported when analytics fails, got %d", reported)
+	}
+}
+
+// TestCheckHandler_RunsInParallel は makeCheckHandler が複数のターゲットを
+// 並列にチェックすることを検証する。各バックエンドが意図的に delay 秒待たせる
+// ため、直列なら total ≈ delay × N かかるが、並列なら ≈ delay で完了する。
+func TestCheckHandler_RunsInParallel(t *testing.T) {
+	const delay = 200 * time.Millisecond
+	const numTargets = 4
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer slow.Close()
+
+	mockAnalytics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer mockAnalytics.Close()
+
+	targets := make([]ServiceTarget, numTargets)
+	for i := 0; i < numTargets; i++ {
+		targets[i] = ServiceTarget{Name: "svc-" + strconv.Itoa(i), URL: slow.URL + "/health"}
+	}
+
+	handler := makeCheckHandler(targets, mockAnalytics.URL)
+	req := httptest.NewRequest("GET", "/check", nil)
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	handler(w, req)
+	elapsed := time.Since(start)
+
+	// 直列実行なら delay × numTargets ≈ 800ms 以上かかる。
+	// 並列実行なら、各リクエストの delay (200ms) ＋ オーバーヘッド程度で完了する。
+	threshold := time.Duration(numTargets-1) * delay
+	if elapsed >= threshold {
+		t.Errorf("expected parallel execution (< %v), but took %v — handler may be serial", threshold, elapsed)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	results := body["results"].([]interface{})
+	if len(results) != numTargets {
+		t.Fatalf("expected %d results, got %d", numTargets, len(results))
+	}
+	reported := int(body["reported"].(float64))
+	if reported != numTargets {
+		t.Errorf("expected %d reported, got %d", numTargets, reported)
+	}
+}
+
+// TestCheckHandler_PreservesTargetOrder は並列実行でも結果スライスの順序が
+// 入力ターゲットの順序と一致することを検証する。
+func TestCheckHandler_PreservesTargetOrder(t *testing.T) {
+	// 各サーバを別々の遅延で応答させ、もし順序保証がなければ結果順がバラつく
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer fast.Close()
+
+	medium := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer medium.Close()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer slow.Close()
+
+	mockAnalytics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer mockAnalytics.Close()
+
+	targets := []ServiceTarget{
+		{Name: "first", URL: slow.URL + "/health"},
+		{Name: "second", URL: fast.URL + "/health"},
+		{Name: "third", URL: medium.URL + "/health"},
+	}
+
+	handler := makeCheckHandler(targets, mockAnalytics.URL)
+	req := httptest.NewRequest("GET", "/check", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	results := body["results"].([]interface{})
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	expectedOrder := []string{"first", "second", "third"}
+	for i, want := range expectedOrder {
+		got := results[i].(map[string]interface{})["service"].(string)
+		if got != want {
+			t.Errorf("result[%d]: expected service=%q, got %q", i, want, got)
+		}
 	}
 }
 
