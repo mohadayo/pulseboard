@@ -135,8 +135,29 @@ Response:
 | GET | `/health` | Health check |
 | POST | `/metrics` | Record a health check metric |
 | GET | `/metrics` | List metrics (`?service=`, `?since=`, `?until=`, `?limit=`, `?offset=`） |
-| DELETE | `/metrics?service=` | サービス名指定で対象メトリクスを削除 |
+| DELETE | `/metrics` | サービス名 / 時刻 を組合せて対象メトリクスを削除（`?service=` / `?before=`） |
 | GET | `/metrics/summary` | Per-service summary statistics |
+
+#### Delete Metrics
+
+`?service=` と `?before=`（Unix timestamp）の一方または両方を指定する。両方とも未指定の場合は 400。
+
+```bash
+# サービス名指定（全件削除）
+curl -X DELETE "http://localhost:8001/metrics?service=web"
+
+# 時刻ベース削除（指定 timestamp より前のレコードを削除、境界は strict <）
+curl -X DELETE "http://localhost:8001/metrics?before=1700000000"
+
+# 組合せ（AND 条件：web で timestamp が 1700000000 より前のレコードのみ削除）
+curl -X DELETE "http://localhost:8001/metrics?service=web&before=1700000000"
+```
+
+レスポンス:
+
+```json
+{"message":"Metrics deleted","service":"web","before":1700000000,"deleted_count":3}
+```
 
 #### List Metrics (paginated)
 
