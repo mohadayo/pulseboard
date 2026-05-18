@@ -164,6 +164,7 @@ app.delete("/api/metrics", async (req: Request, res: Response) => {
   try {
     const params = new URLSearchParams();
     if (req.query.service !== undefined) params.set("service", String(req.query.service));
+    if (req.query.before !== undefined) params.set("before", String(req.query.before));
     const qs = params.toString();
     const url = qs
       ? `${ANALYTICS_URL}/metrics?${qs}`
