@@ -258,6 +258,48 @@ describe("API Gateway", () => {
       spy.mockRestore();
     });
 
+    it("forwards before query parameter to analytics", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", before: 1700000000, deleted_count: 5 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?before=1700000000");
+      expect(res.status).toBe(200);
+      expect(res.body.deleted_count).toBe(5);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("before=1700000000");
+      spy.mockRestore();
+    });
+
+    it("forwards both service and before to analytics", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", service: "web", before: 1700000000, deleted_count: 2 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?service=web&before=1700000000");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).toContain("before=1700000000");
+      spy.mockRestore();
+    });
+
+    it("propagates 400 when neither service nor before are provided", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        config: {} as never,
+        data: { detail: "At least one of 'service' or 'before' must be provided" },
+      };
+      const spy = jest.spyOn(axios, "delete").mockRejectedValueOnce(err);
+      const res = await request(app).delete("/api/metrics");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("service");
+      spy.mockRestore();
+    });
+
     it("propagates 4xx errors from analytics", async () => {
       const err = new AxiosError("Bad Request");
       err.response = {

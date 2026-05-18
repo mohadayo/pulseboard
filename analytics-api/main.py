@@ -139,6 +139,35 @@ class MetricsStore:
             logger.info("Deleted %d records for service=%s", deleted, service)
         return deleted
 
+    def delete(self, service: str | None = None, before: float | None = None) -> int:
+        """Delete records matching the given filters.
+
+        Records are removed only when they match every provided filter:
+        - service: only records whose service equals this value
+        - before:  only records whose timestamp is strictly less than this value
+        """
+        if service is None and before is None:
+            return 0
+        with self._lock:
+            initial = len(self.records)
+            kept: list[MetricRecord] = []
+            for r in self.records:
+                if service is not None and r.service != service:
+                    kept.append(r)
+                    continue
+                if before is not None and r.timestamp >= before:
+                    kept.append(r)
+                    continue
+                # falls through both filters → delete
+            self.records = kept
+            deleted = initial - len(self.records)
+        if deleted > 0:
+            logger.info(
+                "Deleted %d records (service=%s, before=%s)",
+                deleted, service, before,
+            )
+        return deleted
+
     def summary(
         self,
         service: str | None = None,
@@ -341,20 +370,46 @@ def get_metrics(
 
 @app.delete("/metrics")
 def delete_metrics(
-    service: str = Query(
-        ...,
-        description="削除対象のサービス名",
+    service: str | None = Query(
+        default=None,
+        description="削除対象のサービス名（省略時は service で絞り込まない）",
         min_length=1,
         max_length=MAX_SERVICE_LENGTH,
     ),
+    before: float | None = Query(
+        default=None,
+        gt=0,
+        description=(
+            "この Unix timestamp より前（<）のレコードを削除。"
+            "service と組み合わせると AND 条件になる"
+        ),
+    ),
 ):
-    normalized = service.strip()
-    if not normalized:
+    if before is not None and not math.isfinite(before):
+        raise HTTPException(status_code=400, detail="before must be a finite number")
+    normalized = service.strip() if service is not None else None
+    if normalized is not None and not normalized:
         return {"error": "service must not be blank", "deleted_count": 0}
-    deleted = store.delete_by_service(normalized)
+    if normalized is None and before is None:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of 'service' or 'before' must be provided",
+        )
+    deleted = store.delete(service=normalized, before=before)
     if deleted == 0:
-        return {"error": "No metrics found for the specified service", "deleted_count": 0}
-    return {"message": "Metrics deleted", "service": normalized, "deleted_count": deleted}
+        message = "No metrics matched the given filters"
+        return {
+            "error": message,
+            "deleted_count": 0,
+            "service": normalized,
+            "before": before,
+        }
+    return {
+        "message": "Metrics deleted",
+        "service": normalized,
+        "before": before,
+        "deleted_count": deleted,
+    }
 
 
 @app.get("/metrics/summary")

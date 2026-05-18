@@ -358,8 +358,94 @@ def test_delete_metrics_not_found():
 
 
 def test_delete_metrics_missing_param():
+    # service と before のどちらも未指定の場合は 400 で拒否される
     resp = client.delete("/metrics")
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert "service" in resp.json()["detail"]
+    assert "before" in resp.json()["detail"]
+
+
+def test_delete_metrics_by_before_only():
+    # before のみ指定で古いレコードだけ削除されることを確認
+    base = time.time()
+    client.post("/metrics", json={
+        "service": "old", "status": "healthy",
+        "response_time_ms": 10, "timestamp": base - 1000,
+    })
+    client.post("/metrics", json={
+        "service": "mid", "status": "healthy",
+        "response_time_ms": 20, "timestamp": base - 500,
+    })
+    client.post("/metrics", json={
+        "service": "new", "status": "healthy",
+        "response_time_ms": 30, "timestamp": base,
+    })
+
+    cutoff = base - 400
+    resp = client.delete(f"/metrics?before={cutoff}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deleted_count"] == 2  # old と mid が削除される
+    assert data["service"] is None
+    assert data["before"] == cutoff
+
+    remaining = client.get("/metrics").json()
+    remaining_services = sorted(m["service"] for m in remaining["metrics"])
+    assert remaining_services == ["new"]
+
+
+def test_delete_metrics_by_service_and_before_combined():
+    # service と before の AND 条件で削除されることを確認
+    base = time.time()
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy",
+        "response_time_ms": 10, "timestamp": base - 1000,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy",
+        "response_time_ms": 20, "timestamp": base,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "healthy",
+        "response_time_ms": 30, "timestamp": base - 1000,
+    })
+
+    cutoff = base - 500
+    resp = client.delete(f"/metrics?service=web&before={cutoff}")
+    assert resp.status_code == 200
+    data = resp.json()
+    # web で base - 1000 のレコード 1 件だけ削除される
+    assert data["deleted_count"] == 1
+    assert data["service"] == "web"
+    assert data["before"] == cutoff
+
+    remaining = client.get("/metrics").json()
+    remaining_pairs = sorted(
+        (m["service"], int(m["timestamp"])) for m in remaining["metrics"]
+    )
+    assert remaining_pairs == [
+        ("db", int(base - 1000)),
+        ("web", int(base)),
+    ]
+
+
+def test_delete_metrics_by_before_rejects_non_positive():
+    # before は gt=0 でバリデーションされ 0 以下は 422
+    for value in ("0", "-1"):
+        resp = client.delete(f"/metrics?before={value}")
+        assert resp.status_code == 422, value
+
+
+def test_delete_metrics_before_no_match_returns_zero():
+    client.post("/metrics", json={
+        "service": "svc", "status": "healthy",
+        "response_time_ms": 1, "timestamp": time.time(),
+    })
+    resp = client.delete("/metrics?before=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deleted_count"] == 0
+    assert "error" in data
 
 
 def test_delete_metrics_updates_summary():
@@ -383,6 +469,47 @@ def test_metrics_store_delete_by_service_unit():
     assert deleted == 2
     assert len(s.get_all()) == 1
     assert s.get_all()[0].service == "b"
+
+
+def test_metrics_store_delete_unit():
+    # service のみ
+    s = MetricsStore()
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=10, timestamp=100))
+    s.add(MetricRecord(service="b", status="healthy", response_time_ms=20, timestamp=100))
+    assert s.delete(service="a") == 1
+    assert [r.service for r in s.get_all()] == ["b"]
+
+    # before のみ
+    s = MetricsStore()
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=10, timestamp=100))
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=20, timestamp=200))
+    s.add(MetricRecord(service="b", status="healthy", response_time_ms=30, timestamp=50))
+    assert s.delete(before=150) == 2  # timestamp 100 と 50 が削除
+    remaining = sorted((r.service, r.timestamp) for r in s.get_all())
+    assert remaining == [("a", 200)]
+
+    # service + before の AND
+    s = MetricsStore()
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=10, timestamp=100))
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=20, timestamp=300))
+    s.add(MetricRecord(service="b", status="healthy", response_time_ms=30, timestamp=100))
+    assert s.delete(service="a", before=200) == 1  # a で timestamp 100 のみ
+    remaining = sorted((r.service, r.timestamp) for r in s.get_all())
+    assert remaining == [("a", 300), ("b", 100)]
+
+    # service=None かつ before=None は何もしない
+    s = MetricsStore()
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=10, timestamp=100))
+    assert s.delete() == 0
+    assert len(s.get_all()) == 1
+
+    # before の境界: timestamp == before のレコードは「削除しない」(strict <)
+    s = MetricsStore()
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=10, timestamp=100))
+    s.add(MetricRecord(service="a", status="healthy", response_time_ms=20, timestamp=99.999))
+    assert s.delete(before=100) == 1
+    remaining = [r.timestamp for r in s.get_all()]
+    assert remaining == [100]
 
 
 def test_metrics_store_delete_nonexistent():
