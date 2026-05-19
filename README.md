@@ -199,6 +199,16 @@ curl "http://localhost:8001/metrics?service=web&since=1700000000"
 | GET | `/health` | Health check |
 | GET | `/check` | Run health checks on all configured targets |
 
+**メトリクス報告の再送 (Metric reporting retries):**
+
+各ターゲットのチェック結果は analytics-api の `POST /metrics` に送信される。
+analytics-api の一時的な障害（接続エラー、5xx、429 Too Many Requests）に対しては
+指数バックオフで自動リトライする。
+
+- 試行回数は `METRIC_REPORT_MAX_ATTEMPTS`（既定 `3`、`1` でリトライ無効）
+- 初期バックオフは `METRIC_REPORT_BACKOFF_MS`（既定 `100`）。`backoff × 2^(n-1)` で増加
+- 4xx（429 を除く）はリクエスト不備なので即時失敗とする
+
 ## Configuration
 
 All services are configured via environment variables. See [`.env.example`](.env.example) for the full list.
@@ -219,6 +229,8 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `CHECKER_READ_TIMEOUT` | `15` | Health Checker: HTTP リクエスト全体の読み取りタイムアウト（秒） |
 | `CHECKER_WRITE_TIMEOUT` | `15` | Health Checker: HTTP レスポンス書き込みタイムアウト（秒） |
 | `CHECKER_IDLE_TIMEOUT` | `60` | Health Checker: keep-alive アイドルタイムアウト（秒） |
+| `METRIC_REPORT_MAX_ATTEMPTS` | `3` | Health Checker: analytics-api への POST `/metrics` 最大試行回数（`1` でリトライ無効） |
+| `METRIC_REPORT_BACKOFF_MS` | `100` | Health Checker: メトリクス報告の指数バックオフ初期値（ミリ秒） |
 
 ## Testing
 

@@ -97,7 +97,64 @@ func CheckService(client *http.Client, target ServiceTarget) CheckResult {
 	return result
 }
 
+// reportMetricRetryPolicy は ReportMetric の試行回数とバックオフ初期値をまとめた値。
+// 環境変数で上書きされる。
+type reportMetricRetryPolicy struct {
+	maxAttempts int
+	backoff     time.Duration
+}
+
+func loadRetryPolicy() reportMetricRetryPolicy {
+	return reportMetricRetryPolicy{
+		maxAttempts: envIntAtLeastOne("METRIC_REPORT_MAX_ATTEMPTS", 3),
+		backoff:     envMillis("METRIC_REPORT_BACKOFF_MS", 100*time.Millisecond),
+	}
+}
+
+func envIntAtLeastOne(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envMillis(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return fallback
+}
+
+// shouldRetryStatus は HTTP ステータスコードがリトライに値するかを返す。
+// 5xx は一時的障害として再試行し、429 (Too Many Requests) も対象。
+// それ以外の 4xx はクライアント不備なので即時失敗とする。
+func shouldRetryStatus(code int) bool {
+	if code >= 500 && code < 600 {
+		return true
+	}
+	if code == http.StatusTooManyRequests {
+		return true
+	}
+	return false
+}
+
+// ReportMetric は analytics-api に 1 件のメトリクスを POST する。
+// 一時的失敗（接続エラー / 5xx / 429）に対しては指数バックオフで自動リトライする。
+// 試行回数・バックオフ初期値は METRIC_REPORT_MAX_ATTEMPTS / METRIC_REPORT_BACKOFF_MS で上書き可。
 func ReportMetric(client *http.Client, analyticsURL string, result CheckResult) error {
+	return reportMetricWithPolicy(client, analyticsURL, result, loadRetryPolicy())
+}
+
+func reportMetricWithPolicy(
+	client *http.Client,
+	analyticsURL string,
+	result CheckResult,
+	policy reportMetricRetryPolicy,
+) error {
 	payload := map[string]interface{}{
 		"service":          result.Service,
 		"status":           result.Status,
@@ -109,18 +166,52 @@ func ReportMetric(client *http.Client, analyticsURL string, result CheckResult) 
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	resp, err := client.Post(analyticsURL+"/metrics", "application/json", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[WARN] Failed to report metric for %s: %v", result.Service, err)
-		return err
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	for attempt := 1; attempt <= policy.maxAttempts; attempt++ {
+		resp, err := client.Post(analyticsURL+"/metrics", "application/json", bytes.NewReader(body))
+		if err != nil {
+			lastErr = err
+			log.Printf(
+				"[WARN] Report attempt %d/%d failed for %s: %v",
+				attempt, policy.maxAttempts, result.Service, err,
+			)
+		} else {
+			statusCode := resp.StatusCode
+			resp.Body.Close()
+			if statusCode == http.StatusCreated {
+				log.Printf(
+					"[INFO] Reported metric for %s to analytics (attempt %d)",
+					result.Service, attempt,
+				)
+				return nil
+			}
+			lastErr = fmt.Errorf("analytics API returned %d", statusCode)
+			if !shouldRetryStatus(statusCode) {
+				// 4xx (429 除く) は即時失敗。リトライしない。
+				log.Printf(
+					"[WARN] Report for %s aborted (non-retryable %d)",
+					result.Service, statusCode,
+				)
+				return lastErr
+			}
+			log.Printf(
+				"[WARN] Report attempt %d/%d for %s returned %d",
+				attempt, policy.maxAttempts, result.Service, statusCode,
+			)
+		}
 
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("analytics API returned %d", resp.StatusCode)
+		if attempt >= policy.maxAttempts {
+			break
+		}
+		// 指数バックオフ: backoff * 2^(attempt-1)
+		sleep := policy.backoff * (1 << (attempt - 1))
+		time.Sleep(sleep)
 	}
-	log.Printf("[INFO] Reported metric for %s to analytics", result.Service)
-	return nil
+	log.Printf(
+		"[WARN] Failed to report metric for %s after %d attempt(s): %v",
+		result.Service, policy.maxAttempts, lastErr,
+	)
+	return lastErr
 }
 
 func NewTargets() []ServiceTarget {
