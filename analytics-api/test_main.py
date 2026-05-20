@@ -833,6 +833,78 @@ def test_list_services_latest_status_uses_most_recent_timestamp():
     assert data["services"][0]["first_seen"] == 100.0
 
 
+def test_list_services_includes_uptime_stats():
+    # api: healthy=3 / total=4 → uptime 75.0
+    # db : healthy=1 / total=2 → uptime 50.0
+    for ts, status in [(1.0, "healthy"), (2.0, "healthy"), (3.0, "unhealthy"), (4.0, "healthy")]:
+        client.post("/metrics", json={
+            "service": "api", "status": status,
+            "response_time_ms": 10.0, "timestamp": ts,
+        })
+    for ts, status in [(1.0, "healthy"), (2.0, "unhealthy")]:
+        client.post("/metrics", json={
+            "service": "db", "status": status,
+            "response_time_ms": 10.0, "timestamp": ts,
+        })
+
+    resp = client.get("/metrics/services")
+    assert resp.status_code == 200
+    services = {s["service"]: s for s in resp.json()["services"]}
+
+    assert services["api"]["total_checks"] == 4
+    assert services["api"]["healthy_checks"] == 3
+    assert services["api"]["uptime_pct"] == 75.0
+
+    assert services["db"]["total_checks"] == 2
+    assert services["db"]["healthy_checks"] == 1
+    assert services["db"]["uptime_pct"] == 50.0
+
+
+def test_list_services_uptime_pct_zero_when_no_healthy():
+    client.post("/metrics", json={
+        "service": "broken", "status": "unhealthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services")
+    svc = resp.json()["services"][0]
+    assert svc["healthy_checks"] == 0
+    assert svc["uptime_pct"] == 0
+
+
+def test_list_services_sort_by_uptime_pct_asc():
+    # low (25%), mid (50%), high (100%)
+    for ts, status in [(1.0, "healthy"), (2.0, "unhealthy"), (3.0, "unhealthy"), (4.0, "unhealthy")]:
+        client.post("/metrics", json={
+            "service": "low", "status": status, "response_time_ms": 1.0, "timestamp": ts,
+        })
+    for ts, status in [(1.0, "healthy"), (2.0, "unhealthy")]:
+        client.post("/metrics", json={
+            "service": "mid", "status": status, "response_time_ms": 1.0, "timestamp": ts,
+        })
+    for ts in [1.0, 2.0]:
+        client.post("/metrics", json={
+            "service": "high", "status": "healthy", "response_time_ms": 1.0, "timestamp": ts,
+        })
+
+    resp = client.get("/metrics/services?sort=uptime_pct&order=asc")
+    assert resp.status_code == 200
+    names = [s["service"] for s in resp.json()["services"]]
+    assert names == ["low", "mid", "high"]
+
+
+def test_list_services_sort_by_healthy_checks_desc():
+    for ts in [1.0, 2.0, 3.0]:
+        client.post("/metrics", json={
+            "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": ts,
+        })
+    client.post("/metrics", json={
+        "service": "b", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+
+    resp = client.get("/metrics/services?sort=healthy_checks&order=desc")
+    names = [s["service"] for s in resp.json()["services"]]
+    assert names == ["a", "b"]
+
+
 def test_post_metrics_batch_all_valid():
     payload = {
         "metrics": [
