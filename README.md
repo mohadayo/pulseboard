@@ -137,6 +137,7 @@ Response:
 | GET | `/metrics` | List metrics (`?service=`, `?since=`, `?until=`, `?limit=`, `?offset=`） |
 | DELETE | `/metrics` | サービス名 / 時刻 を組合せて対象メトリクスを削除（`?service=` / `?before=`） |
 | GET | `/metrics/summary` | Per-service summary statistics |
+| GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
 
 #### Delete Metrics
 
@@ -191,6 +192,58 @@ curl "http://localhost:8001/metrics?service=web&since=1700000000"
   "metrics": [{"service":"web","status":"healthy","response_time_ms":42.5,"timestamp":1700000000.0}]
 }
 ```
+
+#### List Services with Uptime
+
+`/metrics/services` はサービスごとに集約済みの観測情報を返す。レスポンスに `total_checks` / `healthy_checks` / `uptime_pct` が含まれるため、サービス一覧と稼働率を 1 リクエストで取得できる。
+
+```bash
+# デフォルト（service 名昇順）
+curl http://localhost:8001/metrics/services
+
+# 稼働率の低い順（運用上の発見クエリ）
+curl "http://localhost:8001/metrics/services?sort=uptime_pct&order=asc"
+
+# healthy 件数の多い順
+curl "http://localhost:8001/metrics/services?sort=healthy_checks&order=desc"
+```
+
+`sort` の候補は `service` / `total_checks` / `healthy_checks` / `uptime_pct` / `last_seen` / `first_seen` / `latest_status`。
+
+レスポンス例:
+
+```json
+{
+  "count": 2,
+  "total": 2,
+  "limit": 100,
+  "offset": 0,
+  "sort": "service",
+  "order": "asc",
+  "services": [
+    {
+      "service": "api",
+      "total_checks": 4,
+      "healthy_checks": 3,
+      "uptime_pct": 75.0,
+      "first_seen": 1.0,
+      "last_seen": 4.0,
+      "latest_status": "healthy"
+    },
+    {
+      "service": "db",
+      "total_checks": 2,
+      "healthy_checks": 1,
+      "uptime_pct": 50.0,
+      "first_seen": 1.0,
+      "last_seen": 2.0,
+      "latest_status": "unhealthy"
+    }
+  ]
+}
+```
+
+`uptime_pct` は `healthy_checks / total_checks * 100`（小数点 2 桁丸め、`total_checks == 0` の場合 `0`）。
 
 ### Health Checker (port 8002)
 

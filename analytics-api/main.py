@@ -28,7 +28,13 @@ StatusLiteral = Literal["healthy", "unhealthy", "degraded", "unknown"]
 SortFieldLiteral = Literal["timestamp", "service", "response_time_ms", "status"]
 SortOrderLiteral = Literal["asc", "desc"]
 ServiceSortFieldLiteral = Literal[
-    "service", "total_checks", "last_seen", "first_seen", "latest_status"
+    "service",
+    "total_checks",
+    "healthy_checks",
+    "uptime_pct",
+    "last_seen",
+    "first_seen",
+    "latest_status",
 ]
 
 
@@ -461,7 +467,8 @@ def list_services(
     sort: ServiceSortFieldLiteral = Query(
         default="service",
         description=(
-            "ソートフィールド（service / total_checks / last_seen / first_seen / latest_status）"
+            "ソートフィールド（service / total_checks / healthy_checks / uptime_pct / "
+            "last_seen / first_seen / latest_status）"
         ),
     ),
     order: SortOrderLiteral = Query(
@@ -494,21 +501,31 @@ def list_services(
     by_service: dict[str, dict] = {}
     for r in records:
         existing = by_service.get(r.service)
+        is_healthy = 1 if r.status == "healthy" else 0
         if existing is None:
             by_service[r.service] = {
                 "service": r.service,
                 "total_checks": 1,
+                "healthy_checks": is_healthy,
                 "first_seen": r.timestamp,
                 "last_seen": r.timestamp,
                 "latest_status": r.status,
             }
             continue
         existing["total_checks"] += 1
+        existing["healthy_checks"] += is_healthy
         if r.timestamp < existing["first_seen"]:
             existing["first_seen"] = r.timestamp
         if r.timestamp >= existing["last_seen"]:
             existing["last_seen"] = r.timestamp
             existing["latest_status"] = r.status
+
+    # uptime_pct は集計確定後に一度だけ計算する（小数点 2 桁丸め）
+    for s in by_service.values():
+        total = s["total_checks"]
+        s["uptime_pct"] = (
+            round(s["healthy_checks"] / total * 100, 2) if total else 0.0
+        )
 
     services = list(by_service.values())
     if status is not None:
