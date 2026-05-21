@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -51,6 +52,46 @@ func TestCheckServiceHealthy(t *testing.T) {
 	}
 	if result.ResponseTimeMs < 0 {
 		t.Errorf("response time should be >= 0, got %f", result.ResponseTimeMs)
+	}
+}
+
+func TestCheckServiceTimestampSubSecondPrecision(t *testing.T) {
+	// CheckResult.Timestamp は秒未満の精度を持つこと（analytics-api 側の
+	// time.time() と粒度を合わせ、1 秒以内の連続チェックで衝突しないため）
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	target := ServiceTarget{Name: "ts-svc", URL: server.URL + "/health"}
+
+	results := make([]CheckResult, 5)
+	for i := 0; i < 5; i++ {
+		results[i] = CheckService(client, target)
+	}
+
+	// 少なくとも 1 件は秒未満の小数部分を持つはず。整数秒に丸められていると常に 0 になる。
+	hasFractional := false
+	for _, r := range results {
+		_, frac := math.Modf(r.Timestamp)
+		if frac != 0 {
+			hasFractional = true
+			break
+		}
+	}
+	if !hasFractional {
+		t.Errorf("expected at least one timestamp to have a sub-second component, got: %+v", results)
+	}
+
+	// 単調非減少（時刻が逆行しないこと）も確認しておく
+	for i := 1; i < len(results); i++ {
+		if results[i].Timestamp < results[i-1].Timestamp {
+			t.Errorf(
+				"timestamps must be monotonic non-decreasing: results[%d]=%f < results[%d]=%f",
+				i, results[i].Timestamp, i-1, results[i-1].Timestamp,
+			)
+		}
 	}
 }
 
