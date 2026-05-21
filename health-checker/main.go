@@ -67,10 +67,14 @@ func methodAllowed(w http.ResponseWriter, r *http.Request, allowed ...string) bo
 
 func CheckService(client *http.Client, target ServiceTarget) CheckResult {
 	start := time.Now()
+	// analytics-api 側は Python の time.time() が返す float（マイクロ秒粒度）を
+	// 前提に時間絞り込み・ソートを行うため、こちらも秒未満の精度を維持する。
+	// time.Now().Unix() だと整数秒に丸められ、1 秒以内の並列チェックで
+	// 全レコードの timestamp が同値になってしまう。
 	result := CheckResult{
 		Service:   target.Name,
 		URL:       target.URL,
-		Timestamp: float64(time.Now().Unix()),
+		Timestamp: float64(time.Now().UnixNano()) / 1e9,
 	}
 
 	resp, err := client.Get(target.URL)
