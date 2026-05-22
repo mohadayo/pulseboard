@@ -279,6 +279,40 @@ func makeCheckHandler(targets []ServiceTarget, analyticsURL string) http.Handler
 	}
 }
 
+// runPeriodicChecks はバックグラウンドで一定間隔ごとにすべてのターゲットを
+// チェックし、結果を analytics-api に report する。
+//
+// 起動時に即時 1 回チェックを実施し、その後 interval ごとに繰り返す。
+// 外部から `/check` を呼ばなくても、docker compose up しただけでメトリクスが
+// 蓄積されるようにする目的。CHECK_INTERVAL_SECONDS=0（既定）のときは
+// main() から呼ばれず、これまで通り `/check` 呼び出し時のみチェックが走る
+// （後方互換）。
+//
+// ctx がキャンセルされた時点でループを抜ける。進行中のチェックは HTTP
+// クライアントのタイムアウトで打ち切られるため、shutdown 経路を阻害しない。
+func runPeriodicChecks(
+	ctx context.Context,
+	client *http.Client,
+	targets []ServiceTarget,
+	analyticsURL string,
+	interval time.Duration,
+) {
+	log.Printf("[INFO] Periodic checks enabled (interval=%s)", interval)
+	checkAndReportTargets(client, targets, analyticsURL)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[INFO] Periodic checks stopping")
+			return
+		case <-ticker.C:
+			checkAndReportTargets(client, targets, analyticsURL)
+		}
+	}
+}
+
 func main() {
 	port := GetEnv("CHECKER_PORT", "8002")
 	targets := NewTargets()
@@ -298,6 +332,9 @@ func main() {
 	}
 
 	shutdownTimeout := envSeconds("SHUTDOWN_TIMEOUT_SECONDS", 30*time.Second)
+	// CHECK_INTERVAL_SECONDS > 0 でバックグラウンド定期チェックを有効化する。
+	// 0 / 未設定 / 不正値はゼロとして扱い、これまで通り `/check` 呼び出し時のみ動作。
+	checkInterval := envSeconds("CHECK_INTERVAL_SECONDS", 0)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -308,6 +345,11 @@ func main() {
 			log.Fatalf("[FATAL] Server failed: %v", err)
 		}
 	}()
+
+	if checkInterval > 0 {
+		periodicClient := &http.Client{Timeout: 5 * time.Second}
+		go runPeriodicChecks(ctx, periodicClient, targets, analyticsURL, checkInterval)
+	}
 
 	<-ctx.Done()
 	stop()
