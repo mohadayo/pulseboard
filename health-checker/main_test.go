@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -645,5 +646,87 @@ func TestEnvMillis(t *testing.T) {
 	t.Setenv("BACKOFF_BAD", "abc")
 	if got := envMillis("BACKOFF_BAD", 100*time.Millisecond); got != 100*time.Millisecond {
 		t.Errorf("non-numeric fallback: got %v", got)
+	}
+}
+
+// runPeriodicChecks は起動時の即時 1 回 + interval ごとに繰り返してチェックを
+// 走らせる。短い間隔で動かして、ヘルスエンドポイントと analytics-api への
+// report の両方が複数回呼ばれることを検証する。
+func TestRunPeriodicChecks_RunsAndReportsUntilContextCanceled(t *testing.T) {
+	var healthHits int32
+	healthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&healthHits, 1)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	}))
+	defer healthSrv.Close()
+
+	var reportHits int32
+	analyticsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&reportHits, 1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer analyticsSrv.Close()
+
+	targets := []ServiceTarget{{Name: "svc", URL: healthSrv.URL + "/health"}}
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		runPeriodicChecks(ctx, client, targets, analyticsSrv.URL, 30*time.Millisecond)
+		close(done)
+	}()
+
+	// 起動時即時 1 回 + 30ms 間隔の tick が複数回回るのを待つ。
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("runPeriodicChecks did not stop after context cancel")
+	}
+
+	if got := atomic.LoadInt32(&healthHits); got < 2 {
+		t.Fatalf("expected periodic loop to hit health endpoint at least twice, got %d", got)
+	}
+	if got := atomic.LoadInt32(&reportHits); got < 2 {
+		t.Fatalf("expected periodic loop to report at least twice, got %d", got)
+	}
+}
+
+// 起動した直後に context をキャンセルしても、最初の即時チェックが完了したのち
+// 速やかにループを抜けて goroutine が終了することを確認する。tick を待たずに
+// 抜けるパスを通すための回帰テスト。
+func TestRunPeriodicChecks_ImmediateCancelReturns(t *testing.T) {
+	healthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer healthSrv.Close()
+	analyticsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer analyticsSrv.Close()
+
+	targets := []ServiceTarget{{Name: "svc", URL: healthSrv.URL + "/health"}}
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 起動前にキャンセル
+
+	done := make(chan struct{})
+	go func() {
+		// interval が長くても、ctx がすでにキャンセル済みなら ticker を待たずに抜けるはず。
+		runPeriodicChecks(ctx, client, targets, analyticsSrv.URL, 1*time.Hour)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("runPeriodicChecks did not exit promptly when ctx already canceled")
 	}
 }
