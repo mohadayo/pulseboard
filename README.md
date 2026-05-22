@@ -252,6 +252,17 @@ curl "http://localhost:8001/metrics/services?sort=healthy_checks&order=desc"
 | GET | `/health` | Health check |
 | GET | `/check` | Run health checks on all configured targets |
 
+**バックグラウンド定期チェック (Periodic checks):**
+
+`CHECK_INTERVAL_SECONDS` に正の整数（秒）を指定すると、`/check` を外部から
+呼ばなくてもバックグラウンドで全ターゲットを定期チェックし、結果を
+`analytics-api` に report する。`docker compose up` しただけでメトリクスが
+継続的に蓄積されるため、デモや動作確認の足がかりとして便利。
+
+- `CHECK_INTERVAL_SECONDS=0`（既定）: 無効。これまで通り `/check` 呼び出し時のみ動作（後方互換）
+- `CHECK_INTERVAL_SECONDS=30`: 起動時に即時 1 回実行し、その後 30 秒ごとに繰り返す
+- SIGINT / SIGTERM 受信時にループは速やかに停止し、graceful shutdown を阻害しない
+
 **メトリクス報告の再送 (Metric reporting retries):**
 
 各ターゲットのチェック結果は analytics-api の `POST /metrics` に送信される。
@@ -284,6 +295,7 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `CHECKER_IDLE_TIMEOUT` | `60` | Health Checker: keep-alive アイドルタイムアウト（秒） |
 | `METRIC_REPORT_MAX_ATTEMPTS` | `3` | Health Checker: analytics-api への POST `/metrics` 最大試行回数（`1` でリトライ無効） |
 | `METRIC_REPORT_BACKOFF_MS` | `100` | Health Checker: メトリクス報告の指数バックオフ初期値（ミリ秒） |
+| `CHECK_INTERVAL_SECONDS` | `0` | Health Checker: バックグラウンド定期チェックの間隔（秒、`0` で無効） |
 
 ## Testing
 
