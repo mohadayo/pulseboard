@@ -107,6 +107,50 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("GET /api/metrics/overview", () => {
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/overview");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("forwards service/status/since/until to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { total_records: 0, services_count: 0 },
+        } as never);
+      const res = await request(app).get(
+        "/api/metrics/overview?service=web&status=healthy&since=100&until=200"
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/overview");
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).toContain("status=healthy");
+      expect(calledUrl).toContain("since=100");
+      expect(calledUrl).toContain("until=200");
+      spy.mockRestore();
+    });
+
+    it("propagates 4xx errors from analytics", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        config: {} as never,
+        data: { detail: "since must be less than or equal to until" },
+      };
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/overview?since=200&until=100");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("since must be less than or equal to until");
+      spy.mockRestore();
+    });
+  });
+
   describe("GET /api/metrics/services", () => {
     it("returns 502 when analytics is down", async () => {
       const res = await request(app).get("/api/metrics/services");

@@ -211,6 +211,57 @@ class MetricsStore:
             }
         return result
 
+    def overview(
+        self,
+        service: str | None = None,
+        status: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict:
+        """Return a single global aggregate across all (filtered) records.
+
+        個別サービス単位ではなく、フィルタ後の全レコードを 1 つに集約した
+        トップレベルの稼働サマリを返す。ダッシュボードのヘッダ表示など、
+        「全体で今どうなっているか」を 1 リクエストで把握する用途を想定。
+        """
+        records_snapshot = self.filter(
+            service=service, status=status, since=since, until=until,
+        )
+        status_counts: dict[str, int] = {s: 0 for s in ALLOWED_STATUSES}
+        services: set[str] = set()
+        times: list[float] = []
+        earliest: float | None = None
+        latest: float | None = None
+        for r in records_snapshot:
+            services.add(r.service)
+            status_counts[r.status] = status_counts.get(r.status, 0) + 1
+            times.append(r.response_time_ms)
+            if earliest is None or r.timestamp < earliest:
+                earliest = r.timestamp
+            if latest is None or r.timestamp > latest:
+                latest = r.timestamp
+
+        total = len(records_snapshot)
+        healthy = status_counts.get("healthy", 0)
+        sorted_times = sorted(times)
+        avg = sum(times) / len(times) if times else 0.0
+        return {
+            "total_records": total,
+            "services_count": len(services),
+            "status_counts": status_counts,
+            "overall_uptime_pct": round(healthy / total * 100, 2) if total else 0.0,
+            "response_time_ms": {
+                "avg": round(avg, 2),
+                "min": round(sorted_times[0], 2) if sorted_times else 0.0,
+                "max": round(sorted_times[-1], 2) if sorted_times else 0.0,
+                "p50": round(_percentile(sorted_times, 50), 2),
+                "p95": round(_percentile(sorted_times, 95), 2),
+                "p99": round(_percentile(sorted_times, 99), 2),
+            },
+            "earliest_timestamp": earliest,
+            "latest_timestamp": latest,
+        }
+
 
 store = MetricsStore()
 
@@ -446,6 +497,36 @@ def get_summary(
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
     return store.summary(service=service, status=status, since=since, until=until)
+
+
+@app.get("/metrics/overview")
+def get_overview(
+    service: str | None = None,
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）のレコードに絞り込む",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）のレコードに絞り込む",
+    ),
+):
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+    return store.overview(service=service, status=status, since=since, until=until)
 
 
 @app.get("/metrics/services")
