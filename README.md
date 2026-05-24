@@ -87,6 +87,7 @@ npm start
 | GET | `/health` | Health check |
 | GET | `/api/metrics` | List all metrics (proxy to Analytics API) |
 | GET | `/api/metrics/summary` | Per-service uptime and response time summary |
+| GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API） |
 | POST | `/api/metrics` | Record a metric (proxy to Analytics API) |
 | GET | `/api/check` | Run health checks on all targets (proxy to Checker) |
 | GET | `/api/status` | Aggregated health status of all internal services |
@@ -128,6 +129,33 @@ Response:
 }
 ```
 
+#### Get Overview
+
+サービスごとではなく、フィルタ後の全レコードを 1 つに集約した全体像を返す。
+ダッシュボードのヘッダで「いま全体でどうなっているか」を 1 リクエストで把握する用途。
+`?service=` / `?status=` / `?since=` / `?until=` で絞り込める。
+
+```bash
+curl http://localhost:8000/api/metrics/overview
+```
+
+Response:
+
+```json
+{
+  "total_records": 30,
+  "services_count": 3,
+  "status_counts": {"healthy": 27, "unhealthy": 2, "degraded": 1, "unknown": 0},
+  "overall_uptime_pct": 90.0,
+  "response_time_ms": {
+    "avg": 45.2, "min": 10.0, "max": 320.0,
+    "p50": 40.0, "p95": 180.0, "p99": 300.0
+  },
+  "earliest_timestamp": 1700000000.0,
+  "latest_timestamp": 1700003600.0
+}
+```
+
 ### Analytics API (port 8001)
 
 | Method | Endpoint | Description |
@@ -137,6 +165,7 @@ Response:
 | GET | `/metrics` | List metrics (`?service=`, `?since=`, `?until=`, `?limit=`, `?offset=`） |
 | DELETE | `/metrics` | サービス名 / 時刻 を組合せて対象メトリクスを削除（`?service=` / `?before=`） |
 | GET | `/metrics/summary` | Per-service summary statistics |
+| GET | `/metrics/overview` | 全レコードを 1 つに集約したトップレベル稼働サマリ（`?service=` / `?status=` / `?since=` / `?until=`） |
 | GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
 
 #### Delete Metrics
