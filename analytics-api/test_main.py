@@ -1005,3 +1005,104 @@ def test_post_metrics_batch_respects_max_size():
     assert resp.status_code == 201
     data = resp.json()
     assert data["accepted_count"] == 500
+
+
+# --- /metrics/overview -------------------------------------------------------
+
+def test_overview_empty_store():
+    resp = client.get("/metrics/overview")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_records"] == 0
+    assert data["services_count"] == 0
+    assert data["overall_uptime_pct"] == 0.0
+    assert data["status_counts"] == {
+        "healthy": 0,
+        "unhealthy": 0,
+        "degraded": 0,
+        "unknown": 0,
+    }
+    assert data["earliest_timestamp"] is None
+    assert data["latest_timestamp"] is None
+    assert data["response_time_ms"]["avg"] == 0.0
+
+
+def test_overview_aggregates_across_services():
+    client.post("/metrics", json={"service": "a", "status": "healthy", "response_time_ms": 10, "timestamp": 100.0})
+    client.post("/metrics", json={"service": "a", "status": "unhealthy", "response_time_ms": 30, "timestamp": 200.0})
+    client.post("/metrics", json={"service": "b", "status": "healthy", "response_time_ms": 20, "timestamp": 300.0})
+    resp = client.get("/metrics/overview")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_records"] == 3
+    assert data["services_count"] == 2
+    assert data["status_counts"]["healthy"] == 2
+    assert data["status_counts"]["unhealthy"] == 1
+    # 2 of 3 healthy
+    assert data["overall_uptime_pct"] == 66.67
+    assert data["earliest_timestamp"] == 100.0
+    assert data["latest_timestamp"] == 300.0
+    rt = data["response_time_ms"]
+    assert rt["min"] == 10.0
+    assert rt["max"] == 30.0
+    assert rt["avg"] == 20.0
+
+
+def test_overview_filter_by_service():
+    client.post("/metrics", json={"service": "a", "status": "healthy", "response_time_ms": 10})
+    client.post("/metrics", json={"service": "b", "status": "unhealthy", "response_time_ms": 50})
+    resp = client.get("/metrics/overview?service=a")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_records"] == 1
+    assert data["services_count"] == 1
+    assert data["overall_uptime_pct"] == 100.0
+
+
+def test_overview_filter_by_status():
+    client.post("/metrics", json={"service": "a", "status": "healthy", "response_time_ms": 10})
+    client.post("/metrics", json={"service": "a", "status": "degraded", "response_time_ms": 40})
+    resp = client.get("/metrics/overview?status=degraded")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_records"] == 1
+    assert data["status_counts"]["degraded"] == 1
+    assert data["status_counts"]["healthy"] == 0
+
+
+def test_overview_filter_by_time_range():
+    for ts in (100.0, 200.0, 300.0):
+        client.post(
+            "/metrics",
+            json={"service": "a", "status": "healthy", "response_time_ms": ts / 10, "timestamp": ts},
+        )
+    resp = client.get("/metrics/overview?since=150&until=250")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_records"] == 1
+    assert data["earliest_timestamp"] == 200.0
+    assert data["latest_timestamp"] == 200.0
+
+
+def test_overview_invalid_range():
+    resp = client.get("/metrics/overview?since=200&until=100")
+    assert resp.status_code == 400
+
+
+def test_overview_invalid_status():
+    resp = client.get("/metrics/overview?status=bogus")
+    assert resp.status_code == 422
+
+
+def test_overview_store_unit_percentiles():
+    s = MetricsStore()
+    for i in range(1, 101):
+        s.add(MetricRecord(
+            service="svc", status="healthy", response_time_ms=float(i), timestamp=float(i)
+        ))
+    result = s.overview()
+    assert result["total_records"] == 100
+    assert result["services_count"] == 1
+    assert result["response_time_ms"]["p50"] == 50.5
+    assert result["response_time_ms"]["p95"] == 95.05
+    assert result["overall_uptime_pct"] == 100.0
