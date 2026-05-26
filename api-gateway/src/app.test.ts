@@ -158,15 +158,16 @@ describe("API Gateway", () => {
       expect(res.body.error).toBe("Analytics service unavailable");
     });
 
-    it("forwards status/since/until/sort/order/limit/offset to analytics", async () => {
+    it("forwards service/status/since/until/sort/order/limit/offset to analytics", async () => {
       const spy = jest
         .spyOn(axios, "get")
         .mockResolvedValueOnce({ status: 200, data: { services: [], total: 0 } } as never);
       const res = await request(app).get(
-        "/api/metrics/services?status=healthy&since=100&until=200&sort=last_seen&order=desc&limit=5&offset=1"
+        "/api/metrics/services?service=web&status=healthy&since=100&until=200&sort=last_seen&order=desc&limit=5&offset=1"
       );
       expect(res.status).toBe(200);
       const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
       expect(calledUrl).toContain("status=healthy");
       expect(calledUrl).toContain("since=100");
       expect(calledUrl).toContain("until=200");
