@@ -531,6 +531,12 @@ def get_overview(
 
 @app.get("/metrics/services")
 def list_services(
+    service: str | None = Query(
+        default=None,
+        description="サービス名で絞り込み（指定時は該当サービスのみ集計）",
+        min_length=1,
+        max_length=MAX_SERVICE_LENGTH,
+    ),
     status: StatusLiteral | None = Query(
         default=None,
         description=f"最新ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
@@ -578,7 +584,13 @@ def list_services(
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
 
-    records = store.filter(since=since, until=until)
+    # service は POST 時に strip 保存されるため、ここでも strip して照合する。
+    # 空白のみの場合はフィルタなし扱い（None）とする。
+    normalized_service = service.strip() if service is not None else None
+    if not normalized_service:
+        normalized_service = None
+
+    records = store.filter(service=normalized_service, since=since, until=until)
     by_service: dict[str, dict] = {}
     for r in records:
         existing = by_service.get(r.service)

@@ -808,6 +808,88 @@ def test_list_services_pagination():
     assert [s["service"] for s in data["services"]] == ["b", "c"]
 
 
+def test_list_services_filter_by_service():
+    # service 指定時は該当サービスのみ集計される
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 2.0, "timestamp": 200.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "healthy", "response_time_ms": 3.0, "timestamp": 150.0,
+    })
+    resp = client.get("/metrics/services?service=web")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "web"
+    assert data["services"][0]["total_checks"] == 2
+
+
+def test_list_services_filter_by_service_combined_with_status():
+    # service と status の両方を指定（AND 条件）
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "unhealthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?service=web&status=unhealthy")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "web"
+
+    # status が一致しなければ空になる
+    resp = client.get("/metrics/services?service=web&status=healthy")
+    assert resp.json()["total"] == 0
+
+
+def test_list_services_filter_by_service_strips_whitespace():
+    # service は POST 時に strip 保存されるためクエリ側も strip して照合する
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?service=%20web%20")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "web"
+
+
+def test_list_services_filter_by_service_unknown_returns_empty():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?service=nonexistent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["services"] == []
+
+
+def test_list_services_blank_service_ignored_as_no_filter():
+    # 空白のみの service はフィルタなし扱いとなり全サービスを集計する
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?service=%20%20%20")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 2
+
+
+def test_list_services_rejects_empty_service():
+    resp = client.get("/metrics/services?service=")
+    assert resp.status_code == 422
+
+
+def test_list_services_rejects_overlong_service():
+    resp = client.get("/metrics/services?service=" + "x" * 101)
+    assert resp.status_code == 422
+
+
 def test_list_services_rejects_invalid_sort():
     resp = client.get("/metrics/services?sort=bogus")
     assert resp.status_code == 422
