@@ -51,6 +51,18 @@ describe("API Gateway", () => {
       spy.mockRestore();
     });
 
+    it("does not forward empty query params to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { metrics: [], total: 0 } } as never);
+      const res = await request(app).get("/api/metrics?service=&since=");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("service=");
+      expect(calledUrl).not.toContain("since=");
+      spy.mockRestore();
+    });
+
     it("propagates 4xx errors from analytics on invalid sort", async () => {
       const err = new AxiosError("Unprocessable Entity");
       err.response = {
