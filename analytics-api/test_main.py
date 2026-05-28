@@ -1188,3 +1188,79 @@ def test_overview_store_unit_percentiles():
     assert result["response_time_ms"]["p50"] == 50.5
     assert result["response_time_ms"]["p95"] == 95.05
     assert result["overall_uptime_pct"] == 100.0
+
+
+
+def _seed_for_q(services: list[str]) -> None:
+    for svc in services:
+        client.post(
+            "/metrics",
+            json={"service": svc, "status": "healthy", "response_time_ms": 10.0},
+        )
+
+
+def test_list_metrics_q_substring_case_insensitive():
+    _seed_for_q(["payments-api", "payments-worker", "auth-api", "scheduler"])
+    resp = client.get("/metrics?q=PAYMENTS")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert {m["service"] for m in data["metrics"]} == {"payments-api", "payments-worker"}
+
+
+def test_list_metrics_q_no_match():
+    _seed_for_q(["auth-api", "scheduler"])
+    resp = client.get("/metrics?q=payments")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["count"] == 0
+    assert data["metrics"] == []
+
+
+def test_list_metrics_q_combined_with_service_filter_is_and():
+    _seed_for_q(["payments-api", "payments-worker", "auth-api"])
+    # service=payments-api（完全一致）かつ q=worker（部分一致） → 0 件
+    resp = client.get("/metrics?service=payments-api&q=worker")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+    # service=payments-api かつ q=payments → 1 件（payments-api のみ）
+    resp = client.get("/metrics?service=payments-api&q=payments")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
+
+
+def test_list_metrics_q_blank_returns_400():
+    resp = client.get("/metrics?q=%20%20")
+    assert resp.status_code == 400
+    assert "blank" in resp.json()["detail"]
+
+
+def test_list_metrics_q_too_long_returns_400():
+    long_q = "x" * 101  # MAX_SERVICE_LENGTH = 100
+    resp = client.get(f"/metrics?q={long_q}")
+    assert resp.status_code == 400
+    assert "100" in resp.json()["detail"]
+
+
+def test_list_services_q_substring_case_insensitive():
+    _seed_for_q(["payments-api", "payments-worker", "auth-api", "scheduler"])
+    resp = client.get("/metrics/services?q=Payments")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert {s["service"] for s in data["services"]} == {"payments-api", "payments-worker"}
+
+
+def test_list_services_q_combined_with_service_filter():
+    _seed_for_q(["payments-api", "payments-worker", "auth-api"])
+    resp = client.get("/metrics/services?service=payments-api&q=payments")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "payments-api"
+
+
+def test_list_services_q_blank_returns_400():
+    resp = client.get("/metrics/services?q=%20%20")
+    assert resp.status_code == 400
