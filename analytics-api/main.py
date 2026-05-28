@@ -123,6 +123,7 @@ class MetricsStore:
         status: str | None = None,
         since: float | None = None,
         until: float | None = None,
+        q: str | None = None,
     ) -> list[MetricRecord]:
         with self._lock:
             results = list(self.records)
@@ -134,6 +135,11 @@ class MetricsStore:
             results = [r for r in results if r.timestamp >= since]
         if until is not None:
             results = [r for r in results if r.timestamp <= until]
+        if q is not None:
+            # `q` は呼び出し側で trim 済みの想定。
+            # 大文字小文字を無視するため lower() 比較。
+            needle = q.lower()
+            results = [r for r in results if needle in r.service.lower()]
         return results
 
     def delete_by_service(self, service: str) -> int:
@@ -284,6 +290,25 @@ def post_metric(payload: MetricPayload):
     return {"recorded": True, "service": record.service, "timestamp": record.timestamp}
 
 
+def _normalize_q_param(raw: str | None) -> tuple[str | None, str | None]:
+    """`q` クエリパラメータを正規化する。
+
+    戻り値は (正規化後の値, エラーメッセージ)。
+    - None → (None, None) : 未指定（フィルタしない）
+    - trim 後が空 → (None, "q must not be blank") : 400 を返す対象
+    - 上限超過 → (None, "q is too long ...") : 400 を返す対象
+    - 正常 → (trimmed, None)
+    """
+    if raw is None:
+        return None, None
+    stripped = raw.strip()
+    if not stripped:
+        return None, "q must not be blank"
+    if len(stripped) > MAX_SERVICE_LENGTH:
+        return None, f"q must be at most {MAX_SERVICE_LENGTH} characters"
+    return stripped, None
+
+
 def _format_validation_error(exc: ValidationError) -> str:
     parts = []
     for err in exc.errors():
@@ -398,6 +423,10 @@ def get_metrics(
         default="asc",
         description="ソート順（asc / desc）",
     ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
 ):
     if since is not None and until is not None and since > until:
         raise HTTPException(
@@ -408,8 +437,11 @@ def get_metrics(
         raise HTTPException(status_code=400, detail="since must be a finite number")
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
 
-    records = store.filter(service=service, status=status, since=since, until=until)
+    records = store.filter(service=service, status=status, since=since, until=until, q=q_value)
     reverse = order == "desc"
     records = sorted(records, key=lambda r: getattr(r, sort), reverse=reverse)
     total = len(records)
@@ -573,6 +605,10 @@ def list_services(
         ge=0,
         description="先頭から読み飛ばす件数",
     ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
 ):
     if since is not None and until is not None and since > until:
         raise HTTPException(
@@ -583,6 +619,9 @@ def list_services(
         raise HTTPException(status_code=400, detail="since must be a finite number")
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
 
     # service は POST 時に strip 保存されるため、ここでも strip して照合する。
     # 空白のみの場合はフィルタなし扱い（None）とする。
@@ -590,7 +629,7 @@ def list_services(
     if not normalized_service:
         normalized_service = None
 
-    records = store.filter(service=normalized_service, since=since, until=until)
+    records = store.filter(service=normalized_service, since=since, until=until, q=q_value)
     by_service: dict[str, dict] = {}
     for r in records:
         existing = by_service.get(r.service)
