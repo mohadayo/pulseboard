@@ -12,8 +12,13 @@ const ANALYTICS_URL = process.env.ANALYTICS_URL || "http://localhost:8001";
 const CHECKER_URL = process.env.CHECKER_URL || "http://localhost:8002";
 const PROXY_TIMEOUT = parseInt(process.env.PROXY_TIMEOUT || "5000", 10);
 
+// JSON ペイロードの最大サイズ。明示しないと express.json の既定 100kb で動くため、
+// 環境変数で上書きできる形で明示する。analytics-api の /metrics/batch
+// （最大 500 件）の実用サイズも収まる 256kb を既定値に置く。
+const MAX_REQUEST_BODY = process.env.MAX_REQUEST_BODY || "256kb";
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: MAX_REQUEST_BODY }));
 
 app.use((req: Request, _res: Response, next: NextFunction) => {
   logger.info(`${req.method} ${req.path}`, { ip: req.ip });
@@ -214,9 +219,29 @@ app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
 
+// express.json の limit 超過は SyntaxError ではなく entity.too.large になる。
+// 既定の Express エラーハンドラに任せると HTML を返してしまうため、
+// JSON で 413 を返す専用ハンドラを 500 ハンドラの前段に置く。
+app.use(
+  (
+    err: Error & { type?: string; status?: number; statusCode?: number },
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    const status = err.status ?? err.statusCode;
+    if (err && (err.type === "entity.too.large" || status === 413)) {
+      logger.warn("Request body too large", { limit: MAX_REQUEST_BODY });
+      res.status(413).json({ error: "request body too large" });
+      return;
+    }
+    next(err);
+  },
+);
+
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   logger.error("Unhandled error", { error: err.message });
   res.status(500).json({ error: "Internal server error" });
 });
 
-export { app, ANALYTICS_URL, CHECKER_URL };
+export { app, ANALYTICS_URL, CHECKER_URL, MAX_REQUEST_BODY };
