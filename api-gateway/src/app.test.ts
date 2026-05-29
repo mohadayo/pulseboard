@@ -407,4 +407,29 @@ describe("API Gateway", () => {
       expect(res.body.error).toBe("Not found");
     });
   });
+
+  describe("JSON body size limit", () => {
+    it("returns 413 when POST body exceeds the configured limit", async () => {
+      // 既定 256kb を確実に超える 512KB の payload を組み立てる。
+      const huge = "a".repeat(512 * 1024);
+      const res = await request(app)
+        .post("/api/metrics")
+        .set("Content-Type", "application/json")
+        .send({ service: "web", value: huge });
+      expect(res.status).toBe(413);
+      expect(res.body.error).toBe("request body too large");
+    });
+
+    it("accepts a small JSON POST (proxies to analytics)", async () => {
+      const spy = jest
+        .spyOn(axios, "post")
+        .mockResolvedValueOnce({ status: 201, data: { recorded: true } } as never);
+      const res = await request(app)
+        .post("/api/metrics")
+        .send({ service: "web", status: "healthy", response_time_ms: 1 });
+      expect(res.status).toBe(201);
+      expect(spy).toHaveBeenCalled();
+      spy.mockRestore();
+    });
+  });
 });
