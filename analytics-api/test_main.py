@@ -325,6 +325,35 @@ def test_summary_invalid_status():
     assert resp.status_code == 422
 
 
+def test_summary_filter_by_q_partial_match():
+    client.post("/metrics", json={"service": "payments-api", "status": "healthy", "response_time_ms": 10})
+    client.post("/metrics", json={"service": "payments-worker", "status": "healthy", "response_time_ms": 20})
+    client.post("/metrics", json={"service": "orders-api", "status": "unhealthy", "response_time_ms": 30})
+    resp = client.get("/metrics/summary?q=payments")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert set(data.keys()) == {"payments-api", "payments-worker"}
+
+
+def test_summary_q_case_insensitive():
+    client.post("/metrics", json={"service": "Payments-API", "status": "healthy", "response_time_ms": 10})
+    resp = client.get("/metrics/summary?q=PAYMENTS")
+    assert resp.status_code == 200
+    assert "Payments-API" in resp.json()
+
+
+def test_summary_q_blank_rejected():
+    # 既存 /metrics と挙動を揃え、trim 後が空の q は 400 を返す。
+    resp = client.get("/metrics/summary?q=%20%20")
+    assert resp.status_code == 400
+    assert "blank" in resp.json()["detail"]
+
+
+def test_summary_q_too_long_rejected():
+    resp = client.get("/metrics/summary?q=" + "x" * 9999)
+    assert resp.status_code == 400
+
+
 def test_get_metrics_unknown_service():
     resp = client.get("/metrics?service=nonexistent")
     assert resp.status_code == 200
@@ -1174,6 +1203,37 @@ def test_overview_invalid_range():
 def test_overview_invalid_status():
     resp = client.get("/metrics/overview?status=bogus")
     assert resp.status_code == 422
+
+
+def test_overview_filter_by_q_partial_match():
+    client.post("/metrics", json={"service": "payments-api", "status": "healthy", "response_time_ms": 10})
+    client.post("/metrics", json={"service": "payments-worker", "status": "healthy", "response_time_ms": 20})
+    client.post("/metrics", json={"service": "orders-api", "status": "unhealthy", "response_time_ms": 30})
+    resp = client.get("/metrics/overview?q=payments")
+    assert resp.status_code == 200
+    data = resp.json()
+    # payments-api と payments-worker のみカウント
+    assert data["total_records"] == 2
+    assert data["services_count"] == 2
+
+
+def test_overview_q_case_insensitive():
+    client.post("/metrics", json={"service": "Payments-API", "status": "healthy", "response_time_ms": 10})
+    resp = client.get("/metrics/overview?q=PAYMENTS")
+    assert resp.status_code == 200
+    assert resp.json()["total_records"] == 1
+
+
+def test_overview_q_blank_rejected():
+    # 既存 /metrics と挙動を揃え、trim 後が空の q は 400 を返す。
+    resp = client.get("/metrics/overview?q=%20%20")
+    assert resp.status_code == 400
+    assert "blank" in resp.json()["detail"]
+
+
+def test_overview_q_too_long_rejected():
+    resp = client.get("/metrics/overview?q=" + "x" * 9999)
+    assert resp.status_code == 400
 
 
 def test_overview_store_unit_percentiles():
