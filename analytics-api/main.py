@@ -186,9 +186,10 @@ class MetricsStore:
         status: str | None = None,
         since: float | None = None,
         until: float | None = None,
+        q: str | None = None,
     ) -> dict:
         records_snapshot = self.filter(
-            service=service, status=status, since=since, until=until,
+            service=service, status=status, since=since, until=until, q=q,
         )
         services: dict[str, dict] = {}
         for r in records_snapshot:
@@ -223,6 +224,7 @@ class MetricsStore:
         status: str | None = None,
         since: float | None = None,
         until: float | None = None,
+        q: str | None = None,
     ) -> dict:
         """Return a single global aggregate across all (filtered) records.
 
@@ -231,7 +233,7 @@ class MetricsStore:
         「全体で今どうなっているか」を 1 リクエストで把握する用途を想定。
         """
         records_snapshot = self.filter(
-            service=service, status=status, since=since, until=until,
+            service=service, status=status, since=since, until=until, q=q,
         )
         status_counts: dict[str, int] = {s: 0 for s in ALLOWED_STATUSES}
         services: set[str] = set()
@@ -518,6 +520,10 @@ def get_summary(
         ge=0,
         description="この Unix timestamp 以前（<=）のレコードに絞り込む",
     ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
 ):
     if since is not None and until is not None and since > until:
         raise HTTPException(
@@ -528,7 +534,12 @@ def get_summary(
         raise HTTPException(status_code=400, detail="since must be a finite number")
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
-    return store.summary(service=service, status=status, since=since, until=until)
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
+    return store.summary(
+        service=service, status=status, since=since, until=until, q=q_value,
+    )
 
 
 @app.get("/metrics/overview")
@@ -548,6 +559,10 @@ def get_overview(
         ge=0,
         description="この Unix timestamp 以前（<=）のレコードに絞り込む",
     ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
 ):
     if since is not None and until is not None and since > until:
         raise HTTPException(
@@ -558,7 +573,12 @@ def get_overview(
         raise HTTPException(status_code=400, detail="since must be a finite number")
     if until is not None and not math.isfinite(until):
         raise HTTPException(status_code=400, detail="until must be a finite number")
-    return store.overview(service=service, status=status, since=since, until=until)
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
+    return store.overview(
+        service=service, status=status, since=since, until=until, q=q_value,
+    )
 
 
 @app.get("/metrics/services")
