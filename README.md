@@ -85,9 +85,10 @@ npm start
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Health check |
-| GET | `/api/metrics` | List all metrics (proxy to Analytics API) |
-| GET | `/api/metrics/summary` | Per-service uptime and response time summary |
-| GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API） |
+| GET | `/api/metrics` | List all metrics (proxy to Analytics API、`?q=` で service 名部分一致検索) |
+| GET | `/api/metrics/summary` | Per-service uptime and response time summary（`?q=` で service 名部分一致検索） |
+| GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API、`?q=` で部分一致検索） |
+| GET | `/api/metrics/services` | サービス一覧（`?q=` で部分一致検索、`?sort=` / `?order=` / `?limit=` / `?offset=`） |
 | POST | `/api/metrics` | Record a metric (proxy to Analytics API) |
 | GET | `/api/check` | Run health checks on all targets (proxy to Checker) |
 | GET | `/api/status` | Aggregated health status of all internal services |
@@ -133,7 +134,7 @@ Response:
 
 サービスごとではなく、フィルタ後の全レコードを 1 つに集約した全体像を返す。
 ダッシュボードのヘッダで「いま全体でどうなっているか」を 1 リクエストで把握する用途。
-`?service=` / `?status=` / `?since=` / `?until=` で絞り込める。
+`?service=` / `?status=` / `?since=` / `?until=` で絞り込める。`?q=` で service 名の大文字小文字無視の部分一致検索も可能。
 
 ```bash
 curl http://localhost:8000/api/metrics/overview

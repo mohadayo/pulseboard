@@ -74,7 +74,7 @@ app.get("/api/metrics", (req: Request, res: Response) =>
     req,
     res,
     "/metrics",
-    ["service", "status", "since", "until", "limit", "offset", "sort", "order"],
+    ["service", "status", "since", "until", "limit", "offset", "sort", "order", "q"],
     "metrics",
   ),
 );
@@ -84,7 +84,7 @@ app.get("/api/metrics/summary", (req: Request, res: Response) =>
     req,
     res,
     "/metrics/summary",
-    ["service", "status", "since", "until"],
+    ["service", "status", "since", "until", "q"],
     "summary",
   ),
 );
@@ -94,7 +94,7 @@ app.get("/api/metrics/overview", (req: Request, res: Response) =>
     req,
     res,
     "/metrics/overview",
-    ["service", "status", "since", "until"],
+    ["service", "status", "since", "until", "q"],
     "overview",
   ),
 );
@@ -104,7 +104,7 @@ app.get("/api/metrics/services", (req: Request, res: Response) =>
     req,
     res,
     "/metrics/services",
-    ["service", "status", "since", "until", "sort", "order", "limit", "offset"],
+    ["service", "status", "since", "until", "sort", "order", "limit", "offset", "q"],
     "services",
   ),
 );

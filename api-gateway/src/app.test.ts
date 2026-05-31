@@ -51,6 +51,17 @@ describe("API Gateway", () => {
       spy.mockRestore();
     });
 
+    it("forwards q (partial-match search) to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { metrics: [], total: 0 } } as never);
+      const res = await request(app).get("/api/metrics?q=web");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("q=web");
+      spy.mockRestore();
+    });
+
     it("does not forward empty query params to analytics", async () => {
       const spy = jest
         .spyOn(axios, "get")
@@ -102,6 +113,18 @@ describe("API Gateway", () => {
       spy.mockRestore();
     });
 
+    it("forwards q (partial-match search) to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { web: { total_checks: 1 } } } as never);
+      const res = await request(app).get("/api/metrics/summary?q=web");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/summary");
+      expect(calledUrl).toContain("q=web");
+      spy.mockRestore();
+    });
+
     it("propagates 4xx errors from analytics", async () => {
       const err = new AxiosError("Bad Request");
       err.response = {
@@ -146,6 +169,21 @@ describe("API Gateway", () => {
       spy.mockRestore();
     });
 
+    it("forwards q (partial-match search) to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { total_records: 0, services_count: 0 },
+        } as never);
+      const res = await request(app).get("/api/metrics/overview?q=web");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/overview");
+      expect(calledUrl).toContain("q=web");
+      spy.mockRestore();
+    });
+
     it("propagates 4xx errors from analytics", async () => {
       const err = new AxiosError("Bad Request");
       err.response = {
@@ -187,6 +225,18 @@ describe("API Gateway", () => {
       expect(calledUrl).toContain("order=desc");
       expect(calledUrl).toContain("limit=5");
       expect(calledUrl).toContain("offset=1");
+      spy.mockRestore();
+    });
+
+    it("forwards q (partial-match search) to analytics", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { services: [], total: 0 } } as never);
+      const res = await request(app).get("/api/metrics/services?q=web");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/services");
+      expect(calledUrl).toContain("q=web");
       spy.mockRestore();
     });
 
