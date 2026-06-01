@@ -1324,3 +1324,110 @@ def test_list_services_q_combined_with_service_filter():
 def test_list_services_q_blank_returns_400():
     resp = client.get("/metrics/services?q=%20%20")
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /metrics/count
+# ---------------------------------------------------------------------------
+
+
+def _seed_for_count():
+    """各ステータスを混ぜたサンプルレコードを投入する。"""
+    samples = [
+        ("api", "healthy", 10.0, 100.0),
+        ("api", "healthy", 12.0, 110.0),
+        ("api", "unhealthy", 200.0, 120.0),
+        ("db", "healthy", 5.0, 130.0),
+        ("db", "degraded", 80.0, 140.0),
+        ("worker", "unknown", 0.0, 150.0),
+    ]
+    for service, status, rt, ts in samples:
+        client.post(
+            "/metrics",
+            json={
+                "service": service, "status": status,
+                "response_time_ms": rt, "timestamp": ts,
+            },
+        )
+
+
+def test_count_empty_store():
+    resp = client.get("/metrics/count")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    # 全ステータスのキーが 0 で初期化されていること（クライアントの存在チェック不要）
+    assert data["by_status"] == {
+        "healthy": 0, "unhealthy": 0, "degraded": 0, "unknown": 0,
+    }
+
+
+def test_count_all_records():
+    _seed_for_count()
+    resp = client.get("/metrics/count")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 6
+    assert data["by_status"] == {
+        "healthy": 3, "unhealthy": 1, "degraded": 1, "unknown": 1,
+    }
+
+
+def test_count_filtered_by_service():
+    _seed_for_count()
+    resp = client.get("/metrics/count?service=api")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["by_status"]["healthy"] == 2
+    assert data["by_status"]["unhealthy"] == 1
+    assert data["by_status"]["degraded"] == 0
+    assert data["by_status"]["unknown"] == 0
+
+
+def test_count_filtered_by_status():
+    _seed_for_count()
+    resp = client.get("/metrics/count?status=healthy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    # status 絞り込み後でも by_status はキーを全て含む
+    assert data["by_status"]["healthy"] == 3
+    assert data["by_status"]["unhealthy"] == 0
+
+
+def test_count_filtered_by_time_range():
+    _seed_for_count()
+    resp = client.get("/metrics/count?since=110&until=140")
+    assert resp.status_code == 200
+    data = resp.json()
+    # ts=110,120,130,140 → 4 件
+    assert data["total"] == 4
+
+
+def test_count_q_substring_case_insensitive():
+    _seed_for_count()
+    resp = client.get("/metrics/count?q=API")
+    assert resp.status_code == 200
+    data = resp.json()
+    # service=api のレコード 3 件のみ
+    assert data["total"] == 3
+    assert data["by_status"]["healthy"] == 2
+    assert data["by_status"]["unhealthy"] == 1
+
+
+def test_count_invalid_time_range_returns_400():
+    resp = client.get("/metrics/count?since=200&until=100")
+    assert resp.status_code == 400
+    assert "since" in resp.json()["detail"]
+
+
+def test_count_blank_q_returns_400():
+    resp = client.get("/metrics/count?q=%20%20")
+    assert resp.status_code == 400
+
+
+def test_count_invalid_status_returns_422():
+    # FastAPI の Query Literal 検査により未知 status は 422 になる
+    resp = client.get("/metrics/count?status=bogus")
+    assert resp.status_code == 422
