@@ -99,6 +99,16 @@ app.get("/api/metrics/overview", (req: Request, res: Response) =>
   ),
 );
 
+app.get("/api/metrics/count", (req: Request, res: Response) =>
+  proxyAnalyticsGet(
+    req,
+    res,
+    "/metrics/count",
+    ["service", "status", "since", "until", "q"],
+    "count",
+  ),
+);
+
 app.get("/api/metrics/services", (req: Request, res: Response) =>
   proxyAnalyticsGet(
     req,
