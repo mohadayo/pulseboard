@@ -450,6 +450,66 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("GET /api/metrics/count", () => {
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/count");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("forwards filter params and returns count payload", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          total: 3,
+          by_status: { healthy: 2, unhealthy: 1, degraded: 0, unknown: 0 },
+        },
+      } as never);
+      const res = await request(app).get(
+        "/api/metrics/count?service=web&status=healthy&since=1700000000&until=1800000000&q=web",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(3);
+      expect(res.body.by_status.healthy).toBe(2);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/count");
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).toContain("status=healthy");
+      expect(calledUrl).toContain("since=1700000000");
+      expect(calledUrl).toContain("until=1800000000");
+      expect(calledUrl).toContain("q=web");
+      spy.mockRestore();
+    });
+
+    it("does not forward unrelated params (limit/offset/sort)", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { total: 0, by_status: {} } } as never);
+      const res = await request(app).get(
+        "/api/metrics/count?limit=10&offset=5&sort=service",
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("limit=");
+      expect(calledUrl).not.toContain("offset=");
+      expect(calledUrl).not.toContain("sort=");
+      spy.mockRestore();
+    });
+
+    it("propagates 4xx from analytics on invalid time range", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        data: { detail: "since must be less than or equal to until" },
+      } as never;
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/count?since=200&until=100");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("since");
+      spy.mockRestore();
+    });
+  });
+
   describe("404 handler", () => {
     it("returns 404 for unknown routes", async () => {
       const res = await request(app).get("/unknown");

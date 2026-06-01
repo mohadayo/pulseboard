@@ -581,6 +581,57 @@ def get_overview(
     )
 
 
+@app.get("/metrics/count")
+def get_metrics_count(
+    service: str | None = None,
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）のレコードに絞り込む",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）のレコードに絞り込む",
+    ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
+):
+    """フィルタ条件に合致するレコードの件数のみを返す軽量エンドポイント。
+
+    `/metrics?limit=1` 相当のメタデータだけが必要な UI（バッジ表示・ページャ初期化等）
+    向け。レコード本体を返さないため、転送量と JSON 直列化コストを抑えられる。
+    `by_status` は `ALLOWED_STATUSES` の全キーを 0 で初期化して返すため、
+    クライアントは存在チェックなしで各ステータスにアクセスできる。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
+
+    records = store.filter(
+        service=service, status=status, since=since, until=until, q=q_value,
+    )
+    by_status: dict[str, int] = {s: 0 for s in ALLOWED_STATUSES}
+    for r in records:
+        by_status[r.status] = by_status.get(r.status, 0) + 1
+    return {"total": len(records), "by_status": by_status}
+
+
 @app.get("/metrics/services")
 def list_services(
     service: str | None = Query(
