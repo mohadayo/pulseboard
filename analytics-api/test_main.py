@@ -761,8 +761,11 @@ def test_list_services_distinct_aggregation():
     assert by_name["web"]["first_seen"] == 100.0
     assert by_name["web"]["last_seen"] == 200.0
     assert by_name["web"]["latest_status"] == "unhealthy"
+    # latest_response_ms は last_seen 時点（timestamp=200.0）の観測値
+    assert by_name["web"]["latest_response_ms"] == 2.0
     assert by_name["db"]["total_checks"] == 1
     assert by_name["db"]["latest_status"] == "healthy"
+    assert by_name["db"]["latest_response_ms"] == 3.0
 
 
 def test_list_services_default_sorted_by_service_asc():
@@ -1431,3 +1434,39 @@ def test_count_invalid_status_returns_422():
     # FastAPI の Query Literal 検査により未知 status は 422 になる
     resp = client.get("/metrics/count?status=bogus")
     assert resp.status_code == 422
+
+
+def test_list_services_latest_response_ms_single_observation():
+    # 単一観測なら、その観測の response_time_ms が latest_response_ms になる
+    client.post("/metrics", json={
+        "service": "single", "status": "healthy", "response_time_ms": 12.5, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services")
+    services = resp.json()["services"]
+    assert services[0]["service"] == "single"
+    assert services[0]["latest_response_ms"] == 12.5
+
+
+def test_list_services_latest_response_ms_older_observation_does_not_overwrite():
+    # 後から古いタイムスタンプの観測を追加しても、latest_response_ms は更新されない
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 50.0, "timestamp": 200.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 999.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services")
+    by_name = {s["service"]: s for s in resp.json()["services"]}
+    assert by_name["web"]["latest_response_ms"] == 50.0
+    assert by_name["web"]["latest_status"] == "healthy"
+
+
+def test_list_services_latest_response_ms_is_rounded():
+    # 内部値は小数点 2 桁に丸めて返す（avg_response_ms 等と同じ流儀）
+    client.post("/metrics", json={
+        "service": "round", "status": "healthy",
+        "response_time_ms": 12.345678, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services")
+    services = resp.json()["services"]
+    assert services[0]["latest_response_ms"] == 12.35
