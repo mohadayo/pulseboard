@@ -713,6 +713,7 @@ def list_services(
                 "first_seen": r.timestamp,
                 "last_seen": r.timestamp,
                 "latest_status": r.status,
+                "latest_response_ms": round(r.response_time_ms, 2),
             }
             continue
         existing["total_checks"] += 1
@@ -722,6 +723,7 @@ def list_services(
         if r.timestamp >= existing["last_seen"]:
             existing["last_seen"] = r.timestamp
             existing["latest_status"] = r.status
+            existing["latest_response_ms"] = round(r.response_time_ms, 2)
 
     # uptime_pct は集計確定後に一度だけ計算する（小数点 2 桁丸め）
     for s in by_service.values():
