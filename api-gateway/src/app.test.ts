@@ -256,6 +256,74 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("GET /api/metrics/services/:name", () => {
+    it("forwards to /metrics/services/{name} with url-encoded path", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { service: "web", total_checks: 3 },
+        } as never);
+      const res = await request(app).get("/api/metrics/services/web");
+      expect(res.status).toBe(200);
+      expect(res.body.service).toBe("web");
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/services/web");
+      spy.mockRestore();
+    });
+
+    it("forwards since/until query params", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { service: "web" } } as never);
+      const res = await request(app).get(
+        "/api/metrics/services/web?since=100&until=200"
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("since=100");
+      expect(calledUrl).toContain("until=200");
+      spy.mockRestore();
+    });
+
+    it("propagates 404 from analytics when no data", async () => {
+      const err = new AxiosError("Not Found");
+      err.response = {
+        status: 404,
+        statusText: "Not Found",
+        headers: {},
+        config: {} as never,
+        data: { detail: "No metrics found for service 'web'" },
+      };
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/services/web");
+      expect(res.status).toBe(404);
+      expect(res.body.detail).toContain("No metrics");
+      spy.mockRestore();
+    });
+
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/services/web");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("url-encodes service names with special characters", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { service: "a/b" } } as never);
+      // request library does the path-encoding on its end; route param will be 'a/b' decoded
+      const res = await request(app).get(
+        "/api/metrics/services/" + encodeURIComponent("a b")
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      // a%20b 形式で送られる（encodeURIComponent の挙動）
+      expect(calledUrl).toContain("/metrics/services/a%20b");
+      spy.mockRestore();
+    });
+  });
+
   describe("POST /api/metrics", () => {
     it("returns 502 when analytics is down", async () => {
       const res = await request(app)

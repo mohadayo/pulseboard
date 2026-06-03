@@ -218,6 +218,60 @@ class MetricsStore:
             }
         return result
 
+    def service_detail(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict | None:
+        """単一サービスの集約結果を返す。レコードが 1 件も無ければ None。
+
+        `summary()` の単一サービス相当の数値 (percentile 含む) に、
+        `list_services()` 由来の `latest_*` / `first_seen` / `last_seen` を
+        合わせて 1 オブジェクトで返す。ダッシュボードのサービス詳細画面の
+        単一エンドポイント化を意図している。
+        """
+        records_snapshot = self.filter(service=service, since=since, until=until)
+        if not records_snapshot:
+            return None
+
+        total = len(records_snapshot)
+        healthy = 0
+        times: list[float] = []
+        first_seen: float | None = None
+        last_seen: float | None = None
+        latest_status = ""
+        latest_response_ms = 0.0
+        for r in records_snapshot:
+            if r.status == "healthy":
+                healthy += 1
+            times.append(r.response_time_ms)
+            if first_seen is None or r.timestamp < first_seen:
+                first_seen = r.timestamp
+            if last_seen is None or r.timestamp >= last_seen:
+                last_seen = r.timestamp
+                latest_status = r.status
+                latest_response_ms = r.response_time_ms
+
+        sorted_times = sorted(times)
+        avg = sum(times) / total
+        return {
+            "service": service,
+            "total_checks": total,
+            "healthy_checks": healthy,
+            "uptime_pct": round(healthy / total * 100, 2),
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "latest_status": latest_status,
+            "latest_response_ms": round(latest_response_ms, 2),
+            "avg_response_ms": round(avg, 2),
+            "min_response_ms": round(sorted_times[0], 2),
+            "max_response_ms": round(sorted_times[-1], 2),
+            "p50_response_ms": round(_percentile(sorted_times, 50), 2),
+            "p95_response_ms": round(_percentile(sorted_times, 95), 2),
+            "p99_response_ms": round(_percentile(sorted_times, 99), 2),
+        }
+
     def overview(
         self,
         service: str | None = None,
@@ -749,6 +803,55 @@ def list_services(
         "order": order,
         "services": page,
     }
+
+
+@app.get("/metrics/services/{service_name}")
+def get_service_detail(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ集計",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ集計",
+    ),
+):
+    """単一サービスの詳細集計を返す。データが無ければ 404。
+
+    `/metrics/services?service=X` は単一要素の配列を返すため UI 側で unwrap
+    が必要だったが、こちらは単一オブジェクトを返す。`latest_*` と
+    percentile (p50/p95/p99) を同時に返すため、サービス詳細画面で 1
+    リクエストにまとめられる。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    detail = store.service_detail(service=normalized, since=since, until=until)
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+    return detail
 
 
 if __name__ == "__main__":
