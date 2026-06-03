@@ -1470,3 +1470,96 @@ def test_list_services_latest_response_ms_is_rounded():
     resp = client.get("/metrics/services")
     services = resp.json()["services"]
     assert services[0]["latest_response_ms"] == 12.35
+
+
+def test_get_service_detail_404_when_no_data():
+    resp = client.get("/metrics/services/unknown")
+    assert resp.status_code == 404
+    assert "unknown" in resp.json()["detail"]
+
+
+def test_get_service_detail_returns_aggregate():
+    for i, rt in enumerate([10.0, 30.0, 20.0, 40.0]):
+        client.post("/metrics", json={
+            "service": "api", "status": "healthy" if i % 2 == 0 else "unhealthy",
+            "response_time_ms": rt, "timestamp": 100.0 + i,
+        })
+    resp = client.get("/metrics/services/api")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "api"
+    assert data["total_checks"] == 4
+    assert data["healthy_checks"] == 2
+    assert data["uptime_pct"] == 50.0
+    assert data["min_response_ms"] == 10.0
+    assert data["max_response_ms"] == 40.0
+    assert data["avg_response_ms"] == 25.0
+    # 最新観測は timestamp=103 のもの: rt=40.0, status=unhealthy
+    assert data["latest_status"] == "unhealthy"
+    assert data["latest_response_ms"] == 40.0
+    assert data["first_seen"] == 100.0
+    assert data["last_seen"] == 103.0
+    # percentile keys must exist
+    assert "p50_response_ms" in data
+    assert "p95_response_ms" in data
+    assert "p99_response_ms" in data
+
+
+def test_get_service_detail_filters_other_services():
+    client.post("/metrics", json={
+        "service": "api", "status": "healthy", "response_time_ms": 10.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "unhealthy", "response_time_ms": 500.0,
+    })
+    resp = client.get("/metrics/services/api")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "api"
+    assert data["total_checks"] == 1
+    assert data["healthy_checks"] == 1
+
+
+def test_get_service_detail_strips_whitespace():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 10.0,
+    })
+    resp = client.get("/metrics/services/%20web%20")
+    assert resp.status_code == 200
+    assert resp.json()["service"] == "web"
+
+
+def test_get_service_detail_rejects_blank_name():
+    resp = client.get("/metrics/services/%20%20")
+    assert resp.status_code == 400
+
+
+def test_get_service_detail_rejects_overlong_name():
+    long_name = "x" * 200
+    resp = client.get(f"/metrics/services/{long_name}")
+    assert resp.status_code == 400
+
+
+def test_get_service_detail_time_range_filter():
+    for ts, rt in [(100.0, 10.0), (200.0, 20.0), (300.0, 30.0)]:
+        client.post("/metrics", json={
+            "service": "web", "status": "healthy", "response_time_ms": rt, "timestamp": ts,
+        })
+    resp = client.get("/metrics/services/web?since=150&until=250")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_checks"] == 1
+    assert data["avg_response_ms"] == 20.0
+
+
+def test_get_service_detail_since_greater_than_until_rejected():
+    resp = client.get("/metrics/services/web?since=300&until=100")
+    assert resp.status_code == 400
+
+
+def test_get_service_detail_404_when_filter_excludes_all():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 10.0, "timestamp": 50.0,
+    })
+    resp = client.get("/metrics/services/web?since=100")
+    assert resp.status_code == 404
