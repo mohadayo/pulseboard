@@ -119,6 +119,20 @@ app.get("/api/metrics/services", (req: Request, res: Response) =>
   ),
 );
 
+// 単一サービスの詳細を返すエンドポイント。analytics-api 側で 404 が返るため、
+// proxy 経由でもそのまま 404 を伝播する。
+app.get(
+  "/api/metrics/services/:name",
+  (req: Request<{ name: string }>, res: Response) =>
+    proxyAnalyticsGet(
+      req,
+      res,
+      `/metrics/services/${encodeURIComponent(req.params.name)}`,
+      ["since", "until"],
+      "service-detail",
+    ),
+);
+
 app.post("/api/metrics", async (req: Request, res: Response) => {
   try {
     const resp = await axios.post(`${ANALYTICS_URL}/metrics`, req.body, { timeout: PROXY_TIMEOUT });
