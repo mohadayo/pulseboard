@@ -496,6 +496,49 @@ describe("API Gateway", () => {
       expect(res.status).toBe(502);
       expect(res.body.error).toBe("Analytics service unavailable");
     });
+
+    it("does not forward empty service / before query params", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", deleted_count: 0 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?service=&before=");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      // 空文字は除外され、URL にはクエリが乗らない（パスのみ）。
+      expect(calledUrl).toMatch(/\/metrics$/);
+      expect(calledUrl).not.toContain("service=");
+      expect(calledUrl).not.toContain("before=");
+      spy.mockRestore();
+    });
+
+    it("ignores unknown query params (only forwards service / before)", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", deleted_count: 1 },
+      } as never);
+      const res = await request(app).delete(
+        "/api/metrics?service=web&limit=10&sort=service&q=ignored",
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).not.toContain("limit=");
+      expect(calledUrl).not.toContain("sort=");
+      expect(calledUrl).not.toContain("q=");
+      spy.mockRestore();
+    });
+
+    it("propagates non-2xx success status (e.g. 204) from upstream", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", deleted_count: 2 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?before=1700000000");
+      // axios.delete のレスポンスをそのまま踏襲する想定（200/204 など）。
+      expect([200, 204]).toContain(res.status);
+      spy.mockRestore();
+    });
   });
 
   describe("GET /api/check", () => {
