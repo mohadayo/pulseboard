@@ -25,6 +25,43 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
+// allowedParams に列挙したクエリのみを上流向け URLSearchParams に詰める。
+// 未指定 (undefined) と空文字は除外する。GET / DELETE プロキシで共有する。
+function buildUpstreamParams(
+  req: Request,
+  allowedParams: readonly string[],
+): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const key of allowedParams) {
+    const value = req.query[key];
+    if (value !== undefined && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  return params;
+}
+
+// 上流呼び出しで発生したエラーを 4xx/5xx 伝播 or 502 へ丸めて応答する。
+// `proxyAnalyticsGet` / `proxyAnalyticsDelete` の共通エラー出力。
+function respondUpstreamError(
+  res: Response,
+  err: unknown,
+  label: string,
+): void {
+  if (err instanceof AxiosError && err.response) {
+    logger.warn("Analytics returned error", {
+      label,
+      status: err.response.status,
+      data: err.response.data,
+    });
+    res.status(err.response.status).json(err.response.data);
+    return;
+  }
+  const message = err instanceof AxiosError ? err.message : "Unknown error";
+  logger.error(`Failed to fetch ${label}`, { error: message });
+  res.status(502).json({ error: "Analytics service unavailable", detail: message });
+}
+
 // analytics-api への GET プロキシ共通処理。
 // allowedParams に列挙したクエリのみを転送し（未指定・空文字は除外）、
 // 上流の応答はそのまま返す。上流の HTTP エラー(4xx/5xx)はステータス込みで
@@ -37,31 +74,36 @@ async function proxyAnalyticsGet(
   label: string,
 ): Promise<void> {
   try {
-    const params = new URLSearchParams();
-    for (const key of allowedParams) {
-      const value = req.query[key];
-      if (value !== undefined && value !== "") {
-        params.set(key, String(value));
-      }
-    }
-    const qs = params.toString();
+    const qs = buildUpstreamParams(req, allowedParams).toString();
     const url = qs
       ? `${ANALYTICS_URL}${upstreamPath}?${qs}`
       : `${ANALYTICS_URL}${upstreamPath}`;
     const resp = await axios.get(url, { timeout: PROXY_TIMEOUT });
     res.json(resp.data);
   } catch (err) {
-    if (err instanceof AxiosError && err.response) {
-      logger.warn("Analytics returned error", {
-        status: err.response.status,
-        data: err.response.data,
-      });
-      res.status(err.response.status).json(err.response.data);
-      return;
-    }
-    const message = err instanceof AxiosError ? err.message : "Unknown error";
-    logger.error(`Failed to fetch ${label}`, { error: message });
-    res.status(502).json({ error: "Analytics service unavailable", detail: message });
+    respondUpstreamError(res, err, label);
+  }
+}
+
+// analytics-api への DELETE プロキシ共通処理。
+// GET と同じ allowlist ベースの転送と空文字除外を適用する。
+// 上流の応答ステータス（200 でなくても）を踏襲して返す。
+async function proxyAnalyticsDelete(
+  req: Request,
+  res: Response,
+  upstreamPath: string,
+  allowedParams: readonly string[],
+  label: string,
+): Promise<void> {
+  try {
+    const qs = buildUpstreamParams(req, allowedParams).toString();
+    const url = qs
+      ? `${ANALYTICS_URL}${upstreamPath}?${qs}`
+      : `${ANALYTICS_URL}${upstreamPath}`;
+    const resp = await axios.delete(url, { timeout: PROXY_TIMEOUT });
+    res.status(resp.status).json(resp.data);
+  } catch (err) {
+    respondUpstreamError(res, err, label);
   }
 }
 
@@ -178,31 +220,15 @@ app.post("/api/metrics/batch", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/metrics", async (req: Request, res: Response) => {
-  try {
-    const params = new URLSearchParams();
-    if (req.query.service !== undefined) params.set("service", String(req.query.service));
-    if (req.query.before !== undefined) params.set("before", String(req.query.before));
-    const qs = params.toString();
-    const url = qs
-      ? `${ANALYTICS_URL}/metrics?${qs}`
-      : `${ANALYTICS_URL}/metrics`;
-    const resp = await axios.delete(url, { timeout: PROXY_TIMEOUT });
-    res.status(resp.status).json(resp.data);
-  } catch (err) {
-    if (err instanceof AxiosError && err.response) {
-      logger.warn("Analytics returned error on delete", {
-        status: err.response.status,
-        data: err.response.data,
-      });
-      res.status(err.response.status).json(err.response.data);
-      return;
-    }
-    const message = err instanceof AxiosError ? err.message : "Unknown error";
-    logger.error("Failed to delete metrics", { error: message });
-    res.status(502).json({ error: "Analytics service unavailable", detail: message });
-  }
-});
+app.delete("/api/metrics", (req: Request, res: Response) =>
+  proxyAnalyticsDelete(
+    req,
+    res,
+    "/metrics",
+    ["service", "before"],
+    "delete-metrics",
+  ),
+);
 
 app.get("/api/check", async (_req: Request, res: Response) => {
   try {
