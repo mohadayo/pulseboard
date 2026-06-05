@@ -621,6 +621,101 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("GET /api/metrics/timeseries", () => {
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/timeseries");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("forwards filter params including bucket_seconds", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          bucket_seconds: 60,
+          count: 1,
+          buckets: [
+            {
+              bucket_start: 1700000000.0,
+              total: 2,
+              by_status: { healthy: 2, unhealthy: 0, degraded: 0, unknown: 0 },
+              avg_response_ms: 12.34,
+            },
+          ],
+        },
+      } as never);
+      const res = await request(app).get(
+        "/api/metrics/timeseries?service=web&status=healthy&since=1700000000&until=1800000000&q=web&bucket_seconds=60",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.bucket_seconds).toBe(60);
+      expect(res.body.count).toBe(1);
+      expect(res.body.buckets[0].total).toBe(2);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/timeseries");
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).toContain("status=healthy");
+      expect(calledUrl).toContain("since=1700000000");
+      expect(calledUrl).toContain("until=1800000000");
+      expect(calledUrl).toContain("q=web");
+      expect(calledUrl).toContain("bucket_seconds=60");
+      spy.mockRestore();
+    });
+
+    it("does not forward unrelated params (limit/offset/sort)", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: { bucket_seconds: 60, count: 0, buckets: [] },
+      } as never);
+      const res = await request(app).get(
+        "/api/metrics/timeseries?limit=10&offset=5&sort=timestamp&order=desc",
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("limit=");
+      expect(calledUrl).not.toContain("offset=");
+      expect(calledUrl).not.toContain("sort=");
+      expect(calledUrl).not.toContain("order=");
+      spy.mockRestore();
+    });
+
+    it("strips empty bucket_seconds (lets analytics default kick in)", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: { bucket_seconds: 60, count: 0, buckets: [] },
+      } as never);
+      await request(app).get("/api/metrics/timeseries?bucket_seconds=");
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("bucket_seconds=");
+      spy.mockRestore();
+    });
+
+    it("propagates 422 from analytics on invalid bucket_seconds", async () => {
+      const err = new AxiosError("Unprocessable Entity");
+      err.response = {
+        status: 422,
+        data: { detail: [{ msg: "ensure this value is greater than or equal to 1" }] },
+      } as never;
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/timeseries?bucket_seconds=0");
+      expect(res.status).toBe(422);
+      spy.mockRestore();
+    });
+
+    it("propagates 400 from analytics when since > until", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        data: { detail: "since must be less than or equal to until" },
+      } as never;
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/timeseries?since=200&until=100");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("since");
+      spy.mockRestore();
+    });
+  });
+
   describe("404 handler", () => {
     it("returns 404 for unknown routes", async () => {
       const res = await request(app).get("/unknown");
