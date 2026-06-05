@@ -1563,3 +1563,200 @@ def test_get_service_detail_404_when_filter_excludes_all():
     })
     resp = client.get("/metrics/services/web?since=100")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /metrics/timeseries — 時系列バケット集計
+# ---------------------------------------------------------------------------
+
+
+def test_timeseries_empty_returns_no_buckets():
+    resp = client.get("/metrics/timeseries")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["bucket_seconds"] == 60
+    assert data["count"] == 0
+    assert data["buckets"] == []
+
+
+def test_timeseries_default_bucket_size_groups_within_minute():
+    # 60 秒幅（default）。バケット [1020, 1080) に 3 件、[1080, 1140) に 1 件。
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 10.0, "timestamp": 1020.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 30.0, "timestamp": 1050.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 50.0, "timestamp": 1079.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 70.0, "timestamp": 1080.0,
+    })
+    resp = client.get("/metrics/timeseries")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["bucket_seconds"] == 60
+    assert data["count"] == 2
+    buckets = data["buckets"]
+    assert buckets[0]["bucket_start"] == 1020.0
+    assert buckets[0]["total"] == 3
+    assert buckets[0]["by_status"]["healthy"] == 2
+    assert buckets[0]["by_status"]["unhealthy"] == 1
+    assert buckets[0]["avg_response_ms"] == 30.0  # (10+30+50)/3
+    assert buckets[1]["bucket_start"] == 1080.0
+    assert buckets[1]["total"] == 1
+    assert buckets[1]["avg_response_ms"] == 70.0
+
+
+def test_timeseries_custom_bucket_size():
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 109.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 110.0,
+    })
+    resp = client.get("/metrics/timeseries?bucket_seconds=10")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["bucket_seconds"] == 10
+    assert data["count"] == 2
+    assert data["buckets"][0]["bucket_start"] == 100.0
+    assert data["buckets"][0]["total"] == 2
+    assert data["buckets"][1]["bucket_start"] == 110.0
+    assert data["buckets"][1]["total"] == 1
+
+
+def test_timeseries_by_status_includes_all_keys():
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    data = resp.json()
+    by_status = data["buckets"][0]["by_status"]
+    assert set(by_status.keys()) == {"healthy", "unhealthy", "degraded", "unknown"}
+    assert by_status["healthy"] == 1
+    assert by_status["unhealthy"] == 0
+    assert by_status["degraded"] == 0
+    assert by_status["unknown"] == 0
+
+
+def test_timeseries_sparse_skips_empty_buckets():
+    # 60 秒バケットで時刻 60 と時刻 600 にレコード → 中間バケットは含まれない
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 60.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 600.0,
+    })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    data = resp.json()
+    assert data["count"] == 2
+    starts = [b["bucket_start"] for b in data["buckets"]]
+    assert starts == [60.0, 600.0]
+
+
+def test_timeseries_filter_by_service():
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 10.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "b", "status": "healthy", "response_time_ms": 20.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/timeseries?service=a&bucket_seconds=60")
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["buckets"][0]["total"] == 1
+    assert data["buckets"][0]["avg_response_ms"] == 10.0
+
+
+def test_timeseries_filter_by_status():
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 10.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "unhealthy", "response_time_ms": 20.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/timeseries?status=healthy&bucket_seconds=60")
+    data = resp.json()
+    assert data["buckets"][0]["total"] == 1
+    assert data["buckets"][0]["by_status"]["healthy"] == 1
+    assert data["buckets"][0]["by_status"]["unhealthy"] == 0
+
+
+def test_timeseries_filter_by_since_until():
+    for ts in (50.0, 100.0, 150.0, 200.0):
+        client.post("/metrics", json={
+            "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": ts,
+        })
+    resp = client.get("/metrics/timeseries?since=100&until=150&bucket_seconds=60")
+    data = resp.json()
+    total = sum(b["total"] for b in data["buckets"])
+    assert total == 2
+
+
+def test_timeseries_filter_by_q_partial_match():
+    client.post("/metrics", json={
+        "service": "frontend-web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    client.post("/metrics", json={
+        "service": "backend-api", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/timeseries?q=front&bucket_seconds=60")
+    data = resp.json()
+    assert data["buckets"][0]["total"] == 1
+
+
+def test_timeseries_rejects_bucket_too_small():
+    resp = client.get("/metrics/timeseries?bucket_seconds=0")
+    assert resp.status_code == 422
+
+
+def test_timeseries_rejects_negative_bucket():
+    resp = client.get("/metrics/timeseries?bucket_seconds=-1")
+    assert resp.status_code == 422
+
+
+def test_timeseries_rejects_bucket_too_large():
+    resp = client.get("/metrics/timeseries?bucket_seconds=86401")
+    assert resp.status_code == 422
+
+
+def test_timeseries_rejects_since_greater_than_until():
+    resp = client.get("/metrics/timeseries?since=200&until=100")
+    assert resp.status_code == 400
+
+
+def test_timeseries_rejects_blank_q():
+    resp = client.get("/metrics/timeseries?q=%20%20%20")
+    assert resp.status_code == 400
+
+
+def test_timeseries_avg_response_ms_rounded_to_two_decimals():
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 2.0, "timestamp": 2.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 3.0, "timestamp": 3.0,
+    })
+    # (1+2+3)/3 = 2.0
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    data = resp.json()
+    assert data["buckets"][0]["avg_response_ms"] == 2.0
+
+
+def test_timeseries_buckets_sorted_ascending():
+    # ランダム順で投入してもバケットは昇順で返るべき
+    for ts in (300.0, 100.0, 500.0, 200.0):
+        client.post("/metrics", json={
+            "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": ts,
+        })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    starts = [b["bucket_start"] for b in resp.json()["buckets"]]
+    assert starts == sorted(starts)
