@@ -272,6 +272,56 @@ class MetricsStore:
             "p99_response_ms": round(_percentile(sorted_times, 99), 2),
         }
 
+    def timeseries(
+        self,
+        bucket_seconds: int,
+        service: str | None = None,
+        status: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        q: str | None = None,
+    ) -> list[dict]:
+        """フィルタ後のレコードを `bucket_seconds` 秒幅の半開区間バケットに集約する。
+
+        各バケットは `[bucket_start, bucket_start + bucket_seconds)` に属する観測を対象に、
+        総件数 `total` / ステータス内訳 `by_status` / 平均応答時間 `avg_response_ms` を返す。
+        レコードのない時刻のバケットは結果に含めない（スパース）。
+        並び順は `bucket_start` の昇順。`by_status` は `ALLOWED_STATUSES` の全キーを
+        0 初期化したマップで返すため、クライアントは存在チェックなしで参照できる。
+        """
+        records_snapshot = self.filter(
+            service=service, status=status, since=since, until=until, q=q,
+        )
+        buckets: dict[int, dict] = {}
+        for r in records_snapshot:
+            # 整数演算でバケット境界を求める。負の timestamp は通常起こりえないが、
+            # 万一来ても `int(floor(...))` 相当として正しく丸まる。
+            bucket_start = int(r.timestamp // bucket_seconds) * bucket_seconds
+            b = buckets.get(bucket_start)
+            if b is None:
+                b = {
+                    "total": 0,
+                    "by_status": {s: 0 for s in ALLOWED_STATUSES},
+                    "times": [],
+                }
+                buckets[bucket_start] = b
+            b["total"] += 1
+            b["by_status"][r.status] = b["by_status"].get(r.status, 0) + 1
+            b["times"].append(r.response_time_ms)
+
+        result: list[dict] = []
+        for bucket_start in sorted(buckets.keys()):
+            b = buckets[bucket_start]
+            times = b["times"]
+            avg = sum(times) / len(times) if times else 0.0
+            result.append({
+                "bucket_start": float(bucket_start),
+                "total": b["total"],
+                "by_status": b["by_status"],
+                "avg_response_ms": round(avg, 2),
+            })
+        return result
+
     def overview(
         self,
         service: str | None = None,
@@ -684,6 +734,65 @@ def get_metrics_count(
     for r in records:
         by_status[r.status] = by_status.get(r.status, 0) + 1
     return {"total": len(records), "by_status": by_status}
+
+
+@app.get("/metrics/timeseries")
+def get_timeseries(
+    bucket_seconds: int = Query(
+        default=60,
+        ge=1,
+        le=86400,
+        description="バケット幅（秒）。1秒〜1日（86400秒）の範囲で指定。",
+    ),
+    service: str | None = None,
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）のレコードに絞り込む",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）のレコードに絞り込む",
+    ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
+):
+    """フィルタ条件に合致するレコードを `bucket_seconds` 秒幅の時系列バケットに集約して返す。
+
+    各バケットは `[bucket_start, bucket_start + bucket_seconds)` の半開区間で、
+    観測のないバケットは結果に含めない（スパース表現）。並び順は `bucket_start` 昇順。
+    ダッシュボードの時系列チャートなど、サーバ側でビニング済みのデータを必要とする
+    用途を想定している。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
+
+    buckets = store.timeseries(
+        bucket_seconds=bucket_seconds,
+        service=service, status=status, since=since, until=until, q=q_value,
+    )
+    return {
+        "bucket_seconds": bucket_seconds,
+        "count": len(buckets),
+        "buckets": buckets,
+    }
 
 
 @app.get("/metrics/services")
