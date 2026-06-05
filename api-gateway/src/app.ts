@@ -161,6 +161,18 @@ app.get("/api/metrics/services", (req: Request, res: Response) =>
   ),
 );
 
+// 時系列バケット集計エンドポイントを analytics-api にプロキシする。
+// allowedParams は analytics-api 側 `/metrics/timeseries` のクエリと一致させる。
+app.get("/api/metrics/timeseries", (req: Request, res: Response) =>
+  proxyAnalyticsGet(
+    req,
+    res,
+    "/metrics/timeseries",
+    ["service", "status", "since", "until", "q", "bucket_seconds"],
+    "timeseries",
+  ),
+);
+
 // 単一サービスの詳細を返すエンドポイント。analytics-api 側で 404 が返るため、
 // proxy 経由でもそのまま 404 を伝播する。
 app.get(

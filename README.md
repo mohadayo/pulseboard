@@ -89,6 +89,7 @@ npm start
 | GET | `/api/metrics/summary` | Per-service uptime and response time summary（`?q=` で service 名部分一致検索） |
 | GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API、`?q=` で部分一致検索） |
 | GET | `/api/metrics/services` | サービス一覧（`?q=` で部分一致検索、`?sort=` / `?order=` / `?limit=` / `?offset=`） |
+| GET | `/api/metrics/timeseries` | 時系列バケット集計（`?bucket_seconds=` でバケット幅を指定、既定 60 秒） |
 | POST | `/api/metrics` | Record a metric (proxy to Analytics API) |
 | GET | `/api/check` | Run health checks on all targets (proxy to Checker) |
 | GET | `/api/status` | Aggregated health status of all internal services |
@@ -168,6 +169,7 @@ Response:
 | GET | `/metrics/summary` | Per-service summary statistics |
 | GET | `/metrics/overview` | 全レコードを 1 つに集約したトップレベル稼働サマリ（`?service=` / `?status=` / `?since=` / `?until=`） |
 | GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
+| GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 
 #### Delete Metrics
 
@@ -274,6 +276,45 @@ curl "http://localhost:8001/metrics/services?sort=healthy_checks&order=desc"
 ```
 
 `uptime_pct` は `healthy_checks / total_checks * 100`（小数点 2 桁丸め、`total_checks == 0` の場合 `0`）。
+
+#### Get Timeseries
+
+`/metrics/timeseries` はフィルタ後のレコードを `bucket_seconds` 秒幅の半開区間 `[bucket_start, bucket_start + bucket_seconds)` でグルーピングし、バケット単位の集計を返す。ダッシュボードの時系列チャートなど、サーバ側でビニング済みのデータが欲しいケース向け。
+
+```bash
+# 既定 (60秒バケット)
+curl http://localhost:8001/metrics/timeseries
+
+# 5分バケット + service / status / since の絞り込み
+curl "http://localhost:8001/metrics/timeseries?bucket_seconds=300&service=web&status=healthy&since=1700000000"
+```
+
+`bucket_seconds` は `1`〜`86400`（1秒〜1日）。レコードのない時刻のバケットは返さない（スパース表現）。並び順は `bucket_start` 昇順。
+
+レスポンス例:
+
+```json
+{
+  "bucket_seconds": 60,
+  "count": 2,
+  "buckets": [
+    {
+      "bucket_start": 1700000000.0,
+      "total": 3,
+      "by_status": {"healthy": 2, "unhealthy": 1, "degraded": 0, "unknown": 0},
+      "avg_response_ms": 30.0
+    },
+    {
+      "bucket_start": 1700000060.0,
+      "total": 1,
+      "by_status": {"healthy": 1, "unhealthy": 0, "degraded": 0, "unknown": 0},
+      "avg_response_ms": 70.0
+    }
+  ]
+}
+```
+
+`by_status` は `ALLOWED_STATUSES` の全キーを 0 初期化したマップで返るため、クライアントは存在チェックなしで参照できる。
 
 ### Health Checker (port 8002)
 
