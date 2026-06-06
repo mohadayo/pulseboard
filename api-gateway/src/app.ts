@@ -173,6 +173,20 @@ app.get("/api/metrics/timeseries", (req: Request, res: Response) =>
   ),
 );
 
+// distinct な service 名一覧のみを返す軽量エンドポイントを analytics-api にプロキシする。
+// `:name` パラメタ付きルート (`/api/metrics/services/:name`) より前に登録する必要がある
+// — Express は登録順にマッチするため、後ろに置くと `name = "names"` の単一サービス
+// 詳細リクエストとして解釈されてしまう。
+app.get("/api/metrics/services/names", (req: Request, res: Response) =>
+  proxyAnalyticsGet(
+    req,
+    res,
+    "/metrics/services/names",
+    ["since", "until", "q", "order", "limit", "offset"],
+    "service-names",
+  ),
+);
+
 // 単一サービスの詳細を返すエンドポイント。analytics-api 側で 404 が返るため、
 // proxy 経由でもそのまま 404 を伝播する。
 app.get(

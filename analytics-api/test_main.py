@@ -1760,3 +1760,120 @@ def test_timeseries_buckets_sorted_ascending():
     resp = client.get("/metrics/timeseries?bucket_seconds=60")
     starts = [b["bucket_start"] for b in resp.json()["buckets"]]
     assert starts == sorted(starts)
+
+
+# ---------------------------------------------------------------------------
+# GET /metrics/services/names — distinct service 名のみを返す軽量エンドポイント
+# ---------------------------------------------------------------------------
+
+
+def test_service_names_empty_store():
+    resp = client.get("/metrics/services/names")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {
+        "count": 0,
+        "total": 0,
+        "limit": data["limit"],
+        "offset": 0,
+        "order": "asc",
+        "names": [],
+    }
+
+
+def test_service_names_distinct_and_sorted_asc():
+    # 同じ service を複数回投入しても 1 件にまとめられる、かつ昇順で返る
+    for svc in ("zeta", "alpha", "beta", "alpha", "beta"):
+        client.post("/metrics", json={
+            "service": svc, "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+        })
+    resp = client.get("/metrics/services/names")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["names"] == ["alpha", "beta", "zeta"]
+    assert data["total"] == 3
+    assert data["count"] == 3
+
+
+def test_service_names_order_desc():
+    for svc in ("alpha", "beta", "zeta"):
+        client.post("/metrics", json={
+            "service": svc, "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+        })
+    resp = client.get("/metrics/services/names?order=desc")
+    assert resp.status_code == 200
+    assert resp.json()["names"] == ["zeta", "beta", "alpha"]
+
+
+def test_service_names_pagination():
+    for svc in ("a", "b", "c", "d", "e"):
+        client.post("/metrics", json={
+            "service": svc, "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+        })
+    resp = client.get("/metrics/services/names?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["names"] == ["b", "c"]
+    assert data["count"] == 2
+    assert data["total"] == 5
+    assert data["limit"] == 2
+    assert data["offset"] == 1
+
+
+def test_service_names_q_filter_case_insensitive():
+    for svc in ("api-gateway", "API-Worker", "user-service", "BillingAPI"):
+        client.post("/metrics", json={
+            "service": svc, "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+        })
+    resp = client.get("/metrics/services/names?q=api")
+    assert resp.status_code == 200
+    data = resp.json()
+    # "api" を含む 3 件のみ（大文字小文字無視）。元の表記は保たれる。
+    assert set(data["names"]) == {"api-gateway", "API-Worker", "BillingAPI"}
+    assert data["total"] == 3
+
+
+def test_service_names_q_blank_rejected():
+    resp = client.get("/metrics/services/names?q=%20%20")
+    assert resp.status_code == 400
+    assert "must not be blank" in resp.json()["detail"]
+
+
+def test_service_names_since_until_filter():
+    client.post("/metrics", json={
+        "service": "old", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "new", "status": "healthy", "response_time_ms": 1.0, "timestamp": 200.0,
+    })
+    resp = client.get("/metrics/services/names?since=150")
+    assert resp.status_code == 200
+    assert resp.json()["names"] == ["new"]
+
+
+def test_service_names_since_greater_than_until_rejected():
+    resp = client.get("/metrics/services/names?since=200&until=100")
+    assert resp.status_code == 400
+    assert "since must be less than or equal to until" in resp.json()["detail"]
+
+
+def test_service_names_does_not_collide_with_detail_route():
+    # ルート定義順により、`/metrics/services/names` が
+    # `/metrics/services/{service_name}` より優先されて固定 path として
+    # 解釈されること。`names` という名前のサービスを投入した状態で確認。
+    client.post("/metrics", json={
+        "service": "names", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services/names")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 集約 detail オブジェクト（service / total_checks 等）ではなく軽量レスポンスが返ること。
+    assert "names" in data and isinstance(data["names"], list)
+    assert "uptime_pct" not in data
+    assert data["names"] == ["names"]
+
+
+def test_service_names_limit_capped():
+    resp = client.get("/metrics/services/names?limit=99999")
+    # METRICS_MAX_LIMIT (既定 1000) を超える指定は 422 で拒否される
+    assert resp.status_code == 422

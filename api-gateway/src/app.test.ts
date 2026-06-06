@@ -1,6 +1,6 @@
 import request from "supertest";
 import axios, { AxiosError } from "axios";
-import { app } from "./app";
+import { app, ANALYTICS_URL } from "./app";
 
 describe("API Gateway", () => {
   describe("GET /health", () => {
@@ -252,6 +252,125 @@ describe("API Gateway", () => {
       const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
       const res = await request(app).get("/api/metrics/services?sort=bogus");
       expect(res.status).toBe(422);
+      spy.mockRestore();
+    });
+  });
+
+  describe("GET /api/metrics/services/names", () => {
+    it("forwards to /metrics/services/names without query string when no params", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { count: 0, total: 0, limit: 100, offset: 0, order: "asc", names: [] },
+        } as never);
+      const res = await request(app).get("/api/metrics/services/names");
+      expect(res.status).toBe(200);
+      expect(res.body.names).toEqual([]);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      // クエリ無しなので URL に "?" は付かないこと（buildUpstreamParams の挙動回帰）
+      expect(calledUrl).toBe(`${ANALYTICS_URL}/metrics/services/names`);
+      spy.mockRestore();
+    });
+
+    it("forwards since/until/q/order/limit/offset query params", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { count: 1, total: 1, limit: 50, offset: 0, order: "desc", names: ["web"] },
+        } as never);
+      const res = await request(app).get(
+        "/api/metrics/services/names?since=100&until=200&q=we&order=desc&limit=50&offset=0"
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.names).toEqual(["web"]);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("since=100");
+      expect(calledUrl).toContain("until=200");
+      expect(calledUrl).toContain("q=we");
+      expect(calledUrl).toContain("order=desc");
+      expect(calledUrl).toContain("limit=50");
+      expect(calledUrl).toContain("offset=0");
+      spy.mockRestore();
+    });
+
+    it("drops empty-string query params before forwarding", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { count: 0, total: 0, limit: 100, offset: 0, order: "asc", names: [] },
+        } as never);
+      const res = await request(app).get(
+        "/api/metrics/services/names?since=&q=&order="
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("since=");
+      expect(calledUrl).not.toContain("q=");
+      expect(calledUrl).not.toContain("order=");
+      spy.mockRestore();
+    });
+
+    it("does NOT forward unrelated query params (e.g. status / sort / service)", async () => {
+      // /metrics/services/names は status / sort / service を受け付けないため、
+      // クライアントが付与しても上流には渡さないこと。
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { count: 0, total: 0, limit: 100, offset: 0, order: "asc", names: [] },
+        } as never);
+      const res = await request(app).get(
+        "/api/metrics/services/names?status=healthy&sort=last_seen&service=web"
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("status=");
+      expect(calledUrl).not.toContain("sort=");
+      expect(calledUrl).not.toContain("service=");
+      spy.mockRestore();
+    });
+
+    it("propagates 400 from analytics on invalid query", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        config: {} as never,
+        data: { detail: "q must not be blank" },
+      };
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/services/names?q=foo");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("q must not be blank");
+      spy.mockRestore();
+    });
+
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/services/names");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("is preferred over /api/metrics/services/:name for the exact literal 'names'", async () => {
+      // ルート登録順により、`/api/metrics/services/names` リクエストは names エンドポイントに
+      // ヒットし、`{name:"names"}` の単一サービス詳細ルートには落ちないこと。
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { count: 0, total: 0, limit: 100, offset: 0, order: "asc", names: [] },
+        } as never);
+      await request(app).get("/api/metrics/services/names");
+      const calledUrl = spy.mock.calls[0][0] as string;
+      // 単一サービスルートに行くと "/metrics/services/names?..." ではなく
+      // 同じ path だが「service-detail」label でログされる差しか無いため、
+      // ここでは forward 先 URL の末尾が "/names" であって URL エンコードされた
+      // パスではないことを確認する。
+      expect(calledUrl).toBe(`${ANALYTICS_URL}/metrics/services/names`);
       spy.mockRestore();
     });
   });

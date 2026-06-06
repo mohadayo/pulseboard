@@ -89,6 +89,7 @@ npm start
 | GET | `/api/metrics/summary` | Per-service uptime and response time summary（`?q=` で service 名部分一致検索） |
 | GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API、`?q=` で部分一致検索） |
 | GET | `/api/metrics/services` | サービス一覧（`?q=` で部分一致検索、`?sort=` / `?order=` / `?limit=` / `?offset=`） |
+| GET | `/api/metrics/services/names` | distinct な service 名一覧のみを返す軽量エンドポイント（フィルタドロップダウン populate 用、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/api/metrics/timeseries` | 時系列バケット集計（`?bucket_seconds=` でバケット幅を指定、既定 60 秒） |
 | POST | `/api/metrics` | Record a metric (proxy to Analytics API) |
 | GET | `/api/check` | Run health checks on all targets (proxy to Checker) |
@@ -169,6 +170,7 @@ Response:
 | GET | `/metrics/summary` | Per-service summary statistics |
 | GET | `/metrics/overview` | 全レコードを 1 つに集約したトップレベル稼働サマリ（`?service=` / `?status=` / `?since=` / `?until=`） |
 | GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
+| GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント（per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 
 #### Delete Metrics
@@ -276,6 +278,37 @@ curl "http://localhost:8001/metrics/services?sort=healthy_checks&order=desc"
 ```
 
 `uptime_pct` は `healthy_checks / total_checks * 100`（小数点 2 桁丸め、`total_checks == 0` の場合 `0`）。
+
+#### List Service Names Only
+
+`/metrics/services/names` は distinct な service 名のみを返す。`/metrics/services` のような per-service の uptime / first_seen / last_seen / percentile などフル集計を行わないため、フィルタドロップダウンの populate のように「名前だけ欲しい」用途で /metrics/services よりも小さなペイロード・低コストで応答できる。
+
+```bash
+# 全 service 名（昇順）
+curl http://localhost:8001/metrics/services/names
+
+# 名前に "api" を含むものだけ（大文字小文字無視）
+curl "http://localhost:8001/metrics/services/names?q=api"
+
+# 名前降順 + ページング
+curl "http://localhost:8001/metrics/services/names?order=desc&limit=10&offset=0"
+
+# 直近 1 時間に観測された service 名のみ
+curl "http://localhost:8001/metrics/services/names?since=$(($(date +%s) - 3600))"
+```
+
+レスポンス例:
+
+```json
+{
+  "count": 3,
+  "total": 3,
+  "limit": 100,
+  "offset": 0,
+  "order": "asc",
+  "names": ["api-gateway", "billing", "user-service"]
+}
+```
 
 #### Get Timeseries
 
