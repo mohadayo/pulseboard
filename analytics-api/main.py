@@ -151,6 +151,22 @@ class MetricsStore:
             logger.info("Deleted %d records for service=%s", deleted, service)
         return deleted
 
+    def distinct_services(
+        self,
+        since: float | None = None,
+        until: float | None = None,
+        q: str | None = None,
+    ) -> list[str]:
+        """フィルタ後のレコードから重複排除した service 名一覧を返す（順不同）。
+
+        `/metrics/services` のような per-service 集計（uptime / first_seen /
+        last_seen / percentile 等）は一切行わないため、フィルタドロップダウンの
+        populate のような「名前だけ欲しい」場面で /metrics/services より小さな
+        ペイロード・低コストで応答できる。順序付けは呼び出し側で行う。
+        """
+        records_snapshot = self.filter(since=since, until=until, q=q)
+        return list({r.service for r in records_snapshot})
+
     def delete(self, service: str | None = None, before: float | None = None) -> int:
         """Delete records matching the given filters.
 
@@ -911,6 +927,73 @@ def list_services(
         "sort": sort,
         "order": order,
         "services": page,
+    }
+
+
+@app.get("/metrics/services/names")
+def list_service_names(
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみを対象にする",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみを対象にする",
+    ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する大文字小文字無視の部分一致検索",
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="サービス名の並び順（asc / desc）",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+):
+    """フィルタ後のレコードに含まれる distinct な service 名一覧のみを返す軽量エンドポイント。
+
+    `/metrics/services` は per-service の uptime / first_seen / last_seen /
+    latest_status / percentile などフル集計を返すため、フィルタドロップダウンの
+    populate のように「名前だけ欲しい」用途では過剰。本エンドポイントは集計を
+    一切行わず、重複排除した service 名のみをサービス名昇順（または降順）に
+    並べてページネーションして返す。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+    q_value, q_err = _normalize_q_param(q)
+    if q_err is not None:
+        raise HTTPException(status_code=400, detail=q_err)
+
+    names = store.distinct_services(since=since, until=until, q=q_value)
+    names.sort(reverse=(order == "desc"))
+    total = len(names)
+    page = names[offset:offset + limit]
+    return {
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "order": order,
+        "names": page,
     }
 
 
