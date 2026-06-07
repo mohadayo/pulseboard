@@ -658,6 +658,53 @@ describe("API Gateway", () => {
       expect([200, 204]).toContain(res.status);
       spy.mockRestore();
     });
+
+    it("forwards status filter to analytics", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", status: "unhealthy", deleted_count: 4 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?status=unhealthy");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("status=unhealthy");
+      spy.mockRestore();
+    });
+
+    it("forwards status combined with service and before", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          message: "Metrics deleted",
+          service: "web",
+          before: 1700000000,
+          status: "unhealthy",
+          deleted_count: 1,
+        },
+      } as never);
+      const res = await request(app).delete(
+        "/api/metrics?service=web&before=1700000000&status=unhealthy",
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).toContain("before=1700000000");
+      expect(calledUrl).toContain("status=unhealthy");
+      spy.mockRestore();
+    });
+
+    it("does not forward empty status param", async () => {
+      const spy = jest.spyOn(axios, "delete").mockResolvedValueOnce({
+        status: 200,
+        data: { message: "Metrics deleted", deleted_count: 1 },
+      } as never);
+      const res = await request(app).delete("/api/metrics?service=web&status=");
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("service=web");
+      expect(calledUrl).not.toContain("status=");
+      spy.mockRestore();
+    });
   });
 
   describe("GET /api/check", () => {
