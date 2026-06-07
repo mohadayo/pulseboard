@@ -167,14 +167,20 @@ class MetricsStore:
         records_snapshot = self.filter(since=since, until=until, q=q)
         return list({r.service for r in records_snapshot})
 
-    def delete(self, service: str | None = None, before: float | None = None) -> int:
+    def delete(
+        self,
+        service: str | None = None,
+        before: float | None = None,
+        status: str | None = None,
+    ) -> int:
         """Delete records matching the given filters.
 
         Records are removed only when they match every provided filter:
         - service: only records whose service equals this value
         - before:  only records whose timestamp is strictly less than this value
+        - status:  only records whose status equals this value
         """
-        if service is None and before is None:
+        if service is None and before is None and status is None:
             return 0
         with self._lock:
             initial = len(self.records)
@@ -186,13 +192,16 @@ class MetricsStore:
                 if before is not None and r.timestamp >= before:
                     kept.append(r)
                     continue
-                # falls through both filters → delete
+                if status is not None and r.status != status:
+                    kept.append(r)
+                    continue
+                # falls through all filters → delete
             self.records = kept
             deleted = initial - len(self.records)
         if deleted > 0:
             logger.info(
-                "Deleted %d records (service=%s, before=%s)",
-                deleted, service, before,
+                "Deleted %d records (service=%s, before=%s, status=%s)",
+                deleted, service, before, status,
             )
         return deleted
 
@@ -592,7 +601,14 @@ def delete_metrics(
         gt=0,
         description=(
             "この Unix timestamp より前（<）のレコードを削除。"
-            "service と組み合わせると AND 条件になる"
+            "service / status と組み合わせると AND 条件になる"
+        ),
+    ),
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=(
+            f"削除対象のステータス（{', '.join(ALLOWED_STATUSES)}）。"
+            "service / before と組み合わせると AND 条件になる"
         ),
     ),
 ):
@@ -601,12 +617,12 @@ def delete_metrics(
     normalized = service.strip() if service is not None else None
     if normalized is not None and not normalized:
         return {"error": "service must not be blank", "deleted_count": 0}
-    if normalized is None and before is None:
+    if normalized is None and before is None and status is None:
         raise HTTPException(
             status_code=400,
-            detail="At least one of 'service' or 'before' must be provided",
+            detail="At least one of 'service', 'before' or 'status' must be provided",
         )
-    deleted = store.delete(service=normalized, before=before)
+    deleted = store.delete(service=normalized, before=before, status=status)
     if deleted == 0:
         message = "No metrics matched the given filters"
         return {
@@ -614,11 +630,13 @@ def delete_metrics(
             "deleted_count": 0,
             "service": normalized,
             "before": before,
+            "status": status,
         }
     return {
         "message": "Metrics deleted",
         "service": normalized,
         "before": before,
+        "status": status,
         "deleted_count": deleted,
     }
 

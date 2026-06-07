@@ -251,7 +251,7 @@ app.delete("/api/metrics", (req: Request, res: Response) =>
     req,
     res,
     "/metrics",
-    ["service", "before"],
+    ["service", "before", "status"],
     "delete-metrics",
   ),
 );
