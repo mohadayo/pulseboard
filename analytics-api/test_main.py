@@ -1562,6 +1562,72 @@ def test_list_services_latest_response_ms_is_rounded():
     assert services[0]["latest_response_ms"] == 12.35
 
 
+def test_list_services_sort_by_latest_response_ms_asc():
+    # latest_response_ms を昇順にソートできること（最も速いサービスが先頭）。
+    client.post("/metrics", json={
+        "service": "slow", "status": "healthy",
+        "response_time_ms": 500.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "fast", "status": "healthy",
+        "response_time_ms": 10.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "mid", "status": "healthy",
+        "response_time_ms": 100.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?sort=latest_response_ms&order=asc")
+    assert resp.status_code == 200
+    services = resp.json()["services"]
+    assert [s["service"] for s in services] == ["fast", "mid", "slow"]
+
+
+def test_list_services_sort_by_latest_response_ms_desc():
+    # latest_response_ms を降順にソートできること（最も遅いサービスが先頭）。
+    client.post("/metrics", json={
+        "service": "slow", "status": "healthy",
+        "response_time_ms": 500.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "fast", "status": "healthy",
+        "response_time_ms": 10.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "mid", "status": "healthy",
+        "response_time_ms": 100.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services?sort=latest_response_ms&order=desc")
+    assert resp.status_code == 200
+    services = resp.json()["services"]
+    assert [s["service"] for s in services] == ["slow", "mid", "fast"]
+
+
+def test_list_services_sort_by_latest_response_ms_uses_latest_observation():
+    # 同一サービスに複数観測がある場合、最新タイムスタンプの observation の
+    # response_time_ms が並び替えに使われること（latest_response_ms と整合）。
+    # web: 最終観測 = 200ms / db: 最終観測 = 50ms
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy",
+        "response_time_ms": 5.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy",
+        "response_time_ms": 200.0, "timestamp": 200.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "healthy",
+        "response_time_ms": 999.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "healthy",
+        "response_time_ms": 50.0, "timestamp": 300.0,
+    })
+    resp = client.get("/metrics/services?sort=latest_response_ms&order=asc")
+    assert resp.status_code == 200
+    services = resp.json()["services"]
+    assert [s["service"] for s in services] == ["db", "web"]
+
+
 def test_get_service_detail_404_when_no_data():
     resp = client.get("/metrics/services/unknown")
     assert resp.status_code == 404

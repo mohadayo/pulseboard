@@ -35,6 +35,7 @@ ServiceSortFieldLiteral = Literal[
     "last_seen",
     "first_seen",
     "latest_status",
+    "latest_response_ms",
 ]
 
 
@@ -855,7 +856,7 @@ def list_services(
         default="service",
         description=(
             "ソートフィールド（service / total_checks / healthy_checks / uptime_pct / "
-            "last_seen / first_seen / latest_status）"
+            "last_seen / first_seen / latest_status / latest_response_ms）"
         ),
     ),
     order: SortOrderLiteral = Query(
