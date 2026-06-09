@@ -339,12 +339,20 @@ class MetricsStore:
         for bucket_start in sorted(buckets.keys()):
             b = buckets[bucket_start]
             times = b["times"]
+            # スパース表現なのでバケットに最低 1 件は入っている前提だが、
+            # 念のため空配列も 0.0 にフォールバックする。
+            sorted_times = sorted(times)
             avg = sum(times) / len(times) if times else 0.0
             result.append({
                 "bucket_start": float(bucket_start),
                 "total": b["total"],
                 "by_status": b["by_status"],
                 "avg_response_ms": round(avg, 2),
+                "min_response_ms": round(sorted_times[0], 2) if sorted_times else 0.0,
+                "max_response_ms": round(sorted_times[-1], 2) if sorted_times else 0.0,
+                "p50_response_ms": round(_percentile(sorted_times, 50), 2),
+                "p95_response_ms": round(_percentile(sorted_times, 95), 2),
+                "p99_response_ms": round(_percentile(sorted_times, 99), 2),
             })
         return result
 
