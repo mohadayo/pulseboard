@@ -1918,6 +1918,86 @@ def test_timeseries_buckets_sorted_ascending():
     assert starts == sorted(starts)
 
 
+def test_timeseries_bucket_includes_min_max_and_percentiles():
+    # 1 バケット内の応答時間 [10, 20, 30, 40, 50] に対する min/max/percentile
+    # を SLA ダッシュボード用に返すこと。値は service_detail と同じ
+    # `_percentile` 実装（線形補間）に揃える。
+    for rt in (10.0, 20.0, 30.0, 40.0, 50.0):
+        client.post("/metrics", json={
+            "service": "web", "status": "healthy", "response_time_ms": rt, "timestamp": 1000.0,
+        })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    assert resp.status_code == 200
+    bucket = resp.json()["buckets"][0]
+    assert bucket["total"] == 5
+    assert bucket["min_response_ms"] == 10.0
+    assert bucket["max_response_ms"] == 50.0
+    # 5 要素の p50 は中央値 30.0
+    assert bucket["p50_response_ms"] == 30.0
+    # 95th 線形補間: rank = 0.95*(5-1) = 3.8 → values[3]*0.2 + values[4]*0.8 = 40*0.2 + 50*0.8 = 48.0
+    assert bucket["p95_response_ms"] == 48.0
+    # 99th: rank = 0.99*4 = 3.96 → 40*0.04 + 50*0.96 = 49.6
+    assert bucket["p99_response_ms"] == 49.6
+
+
+def test_timeseries_single_record_bucket_min_max_percentiles_collapse():
+    # 1 件のみのバケットは min/max/percentile すべて同じ値になること。
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 42.5, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    bucket = resp.json()["buckets"][0]
+    assert bucket["min_response_ms"] == 42.5
+    assert bucket["max_response_ms"] == 42.5
+    assert bucket["p50_response_ms"] == 42.5
+    assert bucket["p95_response_ms"] == 42.5
+    assert bucket["p99_response_ms"] == 42.5
+
+
+def test_timeseries_per_bucket_percentiles_are_independent():
+    # 各バケットで集計が独立していること（前バケットの値が引き継がれない）。
+    # バケット A (bucket_start=60): [1, 9] → min=1, max=9, p50=5.0
+    # バケット B (bucket_start=120): [100, 900] → min=100, max=900, p50=500.0
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 1.0, "timestamp": 60.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 9.0, "timestamp": 90.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 100.0, "timestamp": 120.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 900.0, "timestamp": 150.0,
+    })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    buckets = resp.json()["buckets"]
+    assert buckets[0]["min_response_ms"] == 1.0
+    assert buckets[0]["max_response_ms"] == 9.0
+    assert buckets[0]["p50_response_ms"] == 5.0
+    assert buckets[1]["min_response_ms"] == 100.0
+    assert buckets[1]["max_response_ms"] == 900.0
+    assert buckets[1]["p50_response_ms"] == 500.0
+
+
+def test_timeseries_existing_fields_unchanged():
+    # 既存フィールド (bucket_start / total / by_status / avg_response_ms) の
+    # 形と値が新フィールド追加で壊れていないこと（後方互換の回帰）。
+    client.post("/metrics", json={
+        "service": "a", "status": "healthy", "response_time_ms": 10.0, "timestamp": 60.0,
+    })
+    client.post("/metrics", json={
+        "service": "a", "status": "unhealthy", "response_time_ms": 30.0, "timestamp": 90.0,
+    })
+    resp = client.get("/metrics/timeseries?bucket_seconds=60")
+    bucket = resp.json()["buckets"][0]
+    assert bucket["bucket_start"] == 60.0
+    assert bucket["total"] == 2
+    assert bucket["by_status"]["healthy"] == 1
+    assert bucket["by_status"]["unhealthy"] == 1
+    assert bucket["avg_response_ms"] == 20.0
+
+
 # ---------------------------------------------------------------------------
 # GET /metrics/services/names — distinct service 名のみを返す軽量エンドポイント
 # ---------------------------------------------------------------------------
