@@ -298,6 +298,31 @@ class MetricsStore:
             "p99_response_ms": round(_percentile(sorted_times, 99), 2),
         }
 
+    def has_records_for_service(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> bool:
+        """指定サービスのレコードが、フィルタ範囲内に 1 件以上存在するかを返す。
+
+        `/metrics/services/{service_name}/timeseries` のような「データ無しは 404」
+        セマンティクスを実現するため、buckets を組み立てる前に存在チェックを行う。
+        全件走査だが、フィルタ後の長さを評価する `filter()` と違って match を 1 件
+        見つけ次第 break するため、データ量が多い場合に短絡できる。
+        """
+        with self._lock:
+            snapshot = list(self.records)
+        for r in snapshot:
+            if r.service != service:
+                continue
+            if since is not None and r.timestamp < since:
+                continue
+            if until is not None and r.timestamp > until:
+                continue
+            return True
+        return False
+
     def timeseries(
         self,
         bucket_seconds: int,
@@ -1071,6 +1096,84 @@ def get_service_detail(
             detail=f"No metrics found for service '{normalized}'",
         )
     return detail
+
+
+@app.get("/metrics/services/{service_name}/timeseries")
+def get_service_timeseries(
+    service_name: str,
+    bucket_seconds: int = Query(
+        default=60,
+        ge=1,
+        le=86400,
+        description="バケット幅（秒）。1秒〜1日（86400秒）の範囲で指定。",
+    ),
+    status: StatusLiteral | None = Query(
+        default=None,
+        description=f"ステータスで絞り込み（{', '.join(ALLOWED_STATUSES)}）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）のレコードに絞り込む",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）のレコードに絞り込む",
+    ),
+):
+    """単一サービスを対象とした時系列バケット集計を返す。
+
+    `/metrics/timeseries?service=X` と同じ buckets 形を返すが、
+
+    - service 名をパスから受け取ることで URL が宣言的になり、UI 側でのクエリ生成が不要
+    - 該当サービスのレコードが (since/until 範囲内に) 1 件も無い場合は 404 を返す
+      （`/metrics/services/{service_name}` 詳細エンドポイントと同じ「存在しない service は
+      404」セマンティクスを共有）
+
+    という点が異なる。response には `service` フィールドを付与して、UI 側で
+    どのサービスの結果かを混同しないようにする。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    # status フィルタは buckets の中身を空に絞り込むだけで、サービス自体は存在しうるため、
+    # 存在チェックは since/until だけで判定する（status フィルタ後の空 buckets は通常応答）。
+    if not store.has_records_for_service(service=normalized, since=since, until=until):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+
+    buckets = store.timeseries(
+        bucket_seconds=bucket_seconds,
+        service=normalized,
+        status=status,
+        since=since,
+        until=until,
+    )
+    return {
+        "service": normalized,
+        "bucket_seconds": bucket_seconds,
+        "count": len(buckets),
+        "buckets": buckets,
+    }
 
 
 if __name__ == "__main__":
