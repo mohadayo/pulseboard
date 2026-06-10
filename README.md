@@ -172,6 +172,7 @@ Response:
 | GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
 | GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント（per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
+| GET | `/metrics/services/{service_name}/timeseries` | 単一サービスに絞った時系列バケット集計（`?bucket_seconds=` / `?status=` / `?since=` / `?until=`）。該当サービスが存在しなければ 404 |
 
 #### Delete Metrics
 
@@ -348,6 +349,20 @@ curl "http://localhost:8001/metrics/timeseries?bucket_seconds=300&service=web&st
 ```
 
 `by_status` は `ALLOWED_STATUSES` の全キーを 0 初期化したマップで返るため、クライアントは存在チェックなしで参照できる。
+
+#### Service Timeseries
+
+`/metrics/services/{service_name}/timeseries` は単一サービスに絞った時系列バケットを返す。`/metrics/timeseries?service=X` と同じ buckets 形（`bucket_start` / `total` / `by_status` / `avg_response_ms` / `min_response_ms` / `max_response_ms` / `p50_response_ms` / `p95_response_ms` / `p99_response_ms`）に `service` フィールドを付与して返す。サービス起点で URL を組み立てられるため、ダッシュボードのサービス詳細画面から 1 リクエストで時系列データを取り回せる。
+
+該当サービスのレコードが (`since` / `until` 範囲内に) 1 件も無い場合は `404 No metrics found for service '...'` を返す（`/metrics/services/{service_name}` 詳細エンドポイントと同じセマンティクス）。一方、`status` フィルタはあくまでバケット内の集計を絞り込むだけで、存在判定には影響しない（サービス自体は存在するが指定 status のレコードが 0 件なら、空 `buckets` の 200 が返る）。
+
+```bash
+# 既定 (60秒バケット)
+curl http://localhost:8001/metrics/services/web/timeseries
+
+# 5分バケット + status 絞り込み + 時間範囲
+curl "http://localhost:8001/metrics/services/web/timeseries?bucket_seconds=300&status=healthy&since=1700000000&until=1700003600"
+```
 
 ### Health Checker (port 8002)
 
