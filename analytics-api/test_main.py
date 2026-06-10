@@ -2113,3 +2113,170 @@ def test_service_names_limit_capped():
     resp = client.get("/metrics/services/names?limit=99999")
     # METRICS_MAX_LIMIT (既定 1000) を超える指定は 422 で拒否される
     assert resp.status_code == 422
+
+
+# === /metrics/services/{service_name}/timeseries ===
+
+def test_service_timeseries_404_when_service_has_no_data():
+    # 該当サービスのレコードが 1 件も無ければ 404 を返す。
+    # /metrics/services/{name} の詳細エンドポイントと一貫したセマンティクス。
+    client.post("/metrics", json={
+        "service": "other", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries")
+    assert resp.status_code == 404
+    assert "web" in resp.json()["detail"]
+
+
+def test_service_timeseries_returns_buckets_for_service():
+    # 同一サービスの 2 観測（同一バケット [60,120) 内）がまとまり、別サービスは含まれない。
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 10.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 20.0, "timestamp": 110.0,
+    })
+    client.post("/metrics", json={
+        "service": "api", "status": "healthy", "response_time_ms": 5.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries?bucket_seconds=60")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["bucket_seconds"] == 60
+    assert data["count"] == 1
+    bucket = data["buckets"][0]
+    assert bucket["bucket_start"] == 60.0
+    assert bucket["total"] == 2
+    assert bucket["by_status"]["healthy"] == 1
+    assert bucket["by_status"]["unhealthy"] == 1
+    # api の値（5.0）は混入しないこと
+    assert bucket["min_response_ms"] == 10.0
+    assert bucket["max_response_ms"] == 20.0
+
+
+def test_service_timeseries_strips_whitespace_in_path():
+    # path の service_name は trim される（/metrics/services/{name} と同じ規約）。
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services/%20web%20/timeseries")
+    assert resp.status_code == 200
+    assert resp.json()["service"] == "web"
+
+
+def test_service_timeseries_rejects_blank_path():
+    # 空白のみの service_name は 400。
+    resp = client.get("/metrics/services/%20%20/timeseries")
+    assert resp.status_code == 400
+
+
+def test_service_timeseries_rejects_overlong_path():
+    overlong = "x" * 200
+    resp = client.get(f"/metrics/services/{overlong}/timeseries")
+    assert resp.status_code == 400
+
+
+def test_service_timeseries_filters_by_status():
+    # status フィルタは buckets の中身を絞り込むだけで、サービス存在判定には影響しない。
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 60.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 2.0, "timestamp": 60.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries?bucket_seconds=60&status=unhealthy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    bucket = data["buckets"][0]
+    assert bucket["total"] == 1
+    assert bucket["by_status"]["unhealthy"] == 1
+    assert bucket["by_status"]["healthy"] == 0
+
+
+def test_service_timeseries_filters_by_since_until():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 2.0, "timestamp": 200.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 3.0, "timestamp": 300.0,
+    })
+    resp = client.get(
+        "/metrics/services/web/timeseries?bucket_seconds=60&since=150&until=250",
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["buckets"][0]["total"] == 1
+
+
+def test_service_timeseries_404_when_filter_excludes_all():
+    # サービス自体は存在するが、since/until 範囲外で 0 件になる場合も 404 を返す。
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 100.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries?since=500&until=600")
+    assert resp.status_code == 404
+
+
+def test_service_timeseries_rejects_invalid_bucket():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries?bucket_seconds=0")
+    assert resp.status_code == 422
+
+
+def test_service_timeseries_rejects_invalid_status():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries?status=bogus")
+    assert resp.status_code == 422
+
+
+def test_service_timeseries_rejects_since_greater_than_until():
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 1.0, "timestamp": 1.0,
+    })
+    resp = client.get("/metrics/services/web/timeseries?since=200&until=100")
+    assert resp.status_code == 400
+
+
+def test_service_timeseries_matches_global_timeseries_with_service_filter():
+    # /metrics/timeseries?service=web と /metrics/services/web/timeseries の
+    # buckets が一致することを確認（実装の冗長性を排除し UI 側の選択を任せる）。
+    for ts, status, rt in [
+        (60.0, "healthy", 10.0),
+        (60.0, "healthy", 20.0),
+        (180.0, "unhealthy", 30.0),
+    ]:
+        client.post("/metrics", json={
+            "service": "web", "status": status, "response_time_ms": rt, "timestamp": ts,
+        })
+    client.post("/metrics", json={
+        "service": "api", "status": "healthy", "response_time_ms": 99.0, "timestamp": 60.0,
+    })
+    global_resp = client.get("/metrics/timeseries?bucket_seconds=60&service=web")
+    service_resp = client.get("/metrics/services/web/timeseries?bucket_seconds=60")
+    assert global_resp.status_code == 200
+    assert service_resp.status_code == 200
+    assert global_resp.json()["buckets"] == service_resp.json()["buckets"]
+
+
+def test_metrics_store_has_records_for_service_unit():
+    s = MetricsStore()
+    assert s.has_records_for_service("web") is False
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=1.0, timestamp=100.0))
+    s.add(MetricRecord(service="api", status="healthy", response_time_ms=2.0, timestamp=200.0))
+    assert s.has_records_for_service("web") is True
+    assert s.has_records_for_service("api") is True
+    assert s.has_records_for_service("unknown") is False
+    # since / until で短絡する
+    assert s.has_records_for_service("web", since=50, until=150) is True
+    assert s.has_records_for_service("web", since=500) is False
+    assert s.has_records_for_service("web", until=50) is False
