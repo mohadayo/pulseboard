@@ -171,6 +171,7 @@ Response:
 | GET | `/metrics/overview` | 全レコードを 1 つに集約したトップレベル稼働サマリ（`?service=` / `?status=` / `?since=` / `?until=`） |
 | GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
 | GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント（per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
+| GET | `/metrics/count` | フィルタ後のレコード件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/services/{service_name}/timeseries` | 単一サービスに絞った時系列バケット集計（`?bucket_seconds=` / `?status=` / `?since=` / `?until=`）。該当サービスが存在しなければ 404 |
 
@@ -310,6 +311,36 @@ curl "http://localhost:8001/metrics/services/names?since=$(($(date +%s) - 3600))
   "names": ["api-gateway", "billing", "user-service"]
 }
 ```
+
+#### Count Only
+
+`/metrics/count` はフィルタに合致するレコード本体を返さず、件数・status 別件数・登場サービス数だけを返す軽量エンドポイント。`/metrics?limit=1` 相当のメタデータだけが必要な UI（バッジ表示・ページャ初期化・「X サービス × Y チェック」サマリーなど）向けで、レコードの JSON 直列化コストを避けられる。
+
+```bash
+# 全件カウント
+curl http://localhost:8001/metrics/count
+
+# サービス絞り込み
+curl "http://localhost:8001/metrics/count?service=web"
+
+# status + 時間範囲
+curl "http://localhost:8001/metrics/count?status=unhealthy&since=1700000000"
+
+# 部分一致検索（大文字小文字無視）
+curl "http://localhost:8001/metrics/count?q=api"
+```
+
+レスポンス例:
+
+```json
+{
+  "total": 6,
+  "services": 3,
+  "by_status": {"healthy": 3, "unhealthy": 1, "degraded": 1, "unknown": 1}
+}
+```
+
+`by_status` は `ALLOWED_STATUSES` の全キーを 0 で初期化したマップで返るため、クライアントは存在チェックなしで参照できる。`services` はフィルタ通過後のレコードに登場した service 名のユニーク数（status / since / until / q によるフィルタは反映済み）。
 
 #### Get Timeseries
 
