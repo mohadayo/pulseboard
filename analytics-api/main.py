@@ -781,6 +781,8 @@ def get_metrics_count(
     向け。レコード本体を返さないため、転送量と JSON 直列化コストを抑えられる。
     `by_status` は `ALLOWED_STATUSES` の全キーを 0 で初期化して返すため、
     クライアントは存在チェックなしで各ステータスにアクセスできる。
+    `services` は該当レコードに登場した service 名のユニーク数で、
+    ダッシュボードの「X サービス × Y チェック」サマリーで利用する。
     """
     if since is not None and until is not None and since > until:
         raise HTTPException(
@@ -799,9 +801,15 @@ def get_metrics_count(
         service=service, status=status, since=since, until=until, q=q_value,
     )
     by_status: dict[str, int] = {s: 0 for s in ALLOWED_STATUSES}
+    distinct_services: set[str] = set()
     for r in records:
         by_status[r.status] = by_status.get(r.status, 0) + 1
-    return {"total": len(records), "by_status": by_status}
+        distinct_services.add(r.service)
+    return {
+        "total": len(records),
+        "services": len(distinct_services),
+        "by_status": by_status,
+    }
 
 
 @app.get("/metrics/timeseries")
