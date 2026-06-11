@@ -1453,6 +1453,8 @@ def test_count_empty_store():
     assert data["by_status"] == {
         "healthy": 0, "unhealthy": 0, "degraded": 0, "unknown": 0,
     }
+    # 空ストアでは登場した service 数は 0
+    assert data["services"] == 0
 
 
 def test_count_all_records():
@@ -1464,6 +1466,8 @@ def test_count_all_records():
     assert data["by_status"] == {
         "healthy": 3, "unhealthy": 1, "degraded": 1, "unknown": 1,
     }
+    # api / db / worker の 3 サービスがレコードに登場している
+    assert data["services"] == 3
 
 
 def test_count_filtered_by_service():
@@ -1476,6 +1480,8 @@ def test_count_filtered_by_service():
     assert data["by_status"]["unhealthy"] == 1
     assert data["by_status"]["degraded"] == 0
     assert data["by_status"]["unknown"] == 0
+    # service フィルタで該当サービス 1 つに絞られる
+    assert data["services"] == 1
 
 
 def test_count_filtered_by_status():
@@ -1524,6 +1530,44 @@ def test_count_invalid_status_returns_422():
     # FastAPI の Query Literal 検査により未知 status は 422 になる
     resp = client.get("/metrics/count?status=bogus")
     assert resp.status_code == 422
+
+
+def test_count_services_distinct_with_status_filter():
+    # status フィルタ後に残ったレコードの service ユニーク数を返すこと。
+    # healthy: api×2 + db×1 = 3件 / 2サービス（api, db）になる。
+    _seed_for_count()
+    resp = client.get("/metrics/count?status=healthy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["services"] == 2
+
+
+def test_count_services_distinct_with_time_range():
+    # since/until で時間範囲を絞った後の service ユニーク数を返すこと。
+    # ts=110..140 → api(ts=110,120) + db(ts=130,140) = 2サービス
+    _seed_for_count()
+    resp = client.get("/metrics/count?since=110&until=140")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 4
+    assert data["services"] == 2
+
+
+def test_count_services_distinct_zero_when_status_excludes_all():
+    # status フィルタで該当 0 件になった場合、services も 0 を返すこと。
+    _seed_for_count()
+    # ストアに sub-status の record が無い healthy/unhealthy/degraded/unknown 以外は
+    # Literal で 422 になるため、ヒットしない status の代わりに service 名で絞る。
+    resp = client.get("/metrics/count?service=nonexistent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["services"] == 0
+    # `by_status` のキー網羅は引き続き維持される
+    assert data["by_status"] == {
+        "healthy": 0, "unhealthy": 0, "degraded": 0, "unknown": 0,
+    }
 
 
 def test_list_services_latest_response_ms_single_observation():
