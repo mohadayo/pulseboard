@@ -1765,6 +1765,77 @@ def test_get_service_detail_404_when_filter_excludes_all():
     assert resp.status_code == 404
 
 
+def test_get_service_detail_status_counts_initialized_for_all_statuses():
+    # 単一ステータスしか観測されていなくても、`status_counts` は全 4 ステータスを
+    # 0 初期化したマップで返す（UI が `status_counts.degraded` のように存在チェックなしで
+    # 参照できることを保証）。
+    client.post("/metrics", json={
+        "service": "api", "status": "healthy", "response_time_ms": 10.0,
+    })
+    resp = client.get("/metrics/services/api")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status_counts"] == {
+        "healthy": 1, "unhealthy": 0, "degraded": 0, "unknown": 0,
+    }
+
+
+def test_get_service_detail_status_counts_sum_matches_total_checks():
+    # `status_counts` の合計は `total_checks` と一致する。
+    # 4 ステータス全てを観測したパターンで確認する。
+    for status in ["healthy", "healthy", "unhealthy", "degraded", "unknown"]:
+        client.post("/metrics", json={
+            "service": "api", "status": status, "response_time_ms": 10.0,
+        })
+    resp = client.get("/metrics/services/api")
+    assert resp.status_code == 200
+    data = resp.json()
+    counts = data["status_counts"]
+    assert counts["healthy"] == 2
+    assert counts["unhealthy"] == 1
+    assert counts["degraded"] == 1
+    assert counts["unknown"] == 1
+    assert sum(counts.values()) == data["total_checks"] == 5
+    # `healthy_checks` は `status_counts.healthy` と一致する（既存値との整合性回帰）。
+    assert counts["healthy"] == data["healthy_checks"]
+
+
+def test_get_service_detail_status_counts_respects_time_filter():
+    # 時間範囲フィルタで除外されたレコードは `status_counts` にも含まれないこと。
+    client.post("/metrics", json={
+        "service": "web", "status": "unhealthy", "response_time_ms": 10.0, "timestamp": 50.0,
+    })
+    client.post("/metrics", json={
+        "service": "web", "status": "healthy", "response_time_ms": 20.0, "timestamp": 200.0,
+    })
+    resp = client.get("/metrics/services/web?since=100&until=300")
+    assert resp.status_code == 200
+    data = resp.json()
+    # since=100 より前の unhealthy=1 は含まれない
+    assert data["status_counts"] == {
+        "healthy": 1, "unhealthy": 0, "degraded": 0, "unknown": 0,
+    }
+    assert sum(data["status_counts"].values()) == data["total_checks"] == 1
+
+
+def test_get_service_detail_status_counts_excludes_other_services():
+    # 別 service のレコードは `status_counts` に含まれないこと。
+    client.post("/metrics", json={
+        "service": "api", "status": "healthy", "response_time_ms": 10.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "unhealthy", "response_time_ms": 500.0,
+    })
+    client.post("/metrics", json={
+        "service": "db", "status": "degraded", "response_time_ms": 100.0,
+    })
+    resp = client.get("/metrics/services/api")
+    data = resp.json()
+    assert data["status_counts"] == {
+        "healthy": 1, "unhealthy": 0, "degraded": 0, "unknown": 0,
+    }
+
+
 # ---------------------------------------------------------------------------
 # /metrics/timeseries — 時系列バケット集計
 # ---------------------------------------------------------------------------
