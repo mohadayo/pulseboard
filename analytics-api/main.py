@@ -263,6 +263,10 @@ class MetricsStore:
 
         total = len(records_snapshot)
         healthy = 0
+        # `ALLOWED_STATUSES` の全キーを 0 初期化することで、UI が
+        # 存在チェックなしで `status_counts.degraded` 等を参照できる。
+        # `/metrics/overview` の `status_counts` と同じ形を共有する。
+        status_counts: dict[str, int] = {s: 0 for s in ALLOWED_STATUSES}
         times: list[float] = []
         first_seen: float | None = None
         last_seen: float | None = None
@@ -271,6 +275,7 @@ class MetricsStore:
         for r in records_snapshot:
             if r.status == "healthy":
                 healthy += 1
+            status_counts[r.status] = status_counts.get(r.status, 0) + 1
             times.append(r.response_time_ms)
             if first_seen is None or r.timestamp < first_seen:
                 first_seen = r.timestamp
@@ -286,6 +291,7 @@ class MetricsStore:
             "total_checks": total,
             "healthy_checks": healthy,
             "uptime_pct": round(healthy / total * 100, 2),
+            "status_counts": status_counts,
             "first_seen": first_seen,
             "last_seen": last_seen,
             "latest_status": latest_status,
