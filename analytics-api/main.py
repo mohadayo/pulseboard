@@ -304,6 +304,49 @@ class MetricsStore:
             "p99_response_ms": round(_percentile(sorted_times, 99), 2),
         }
 
+    def status_changes(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict]:
+        """指定サービスの records を timestamp 昇順で走査し、
+        `status` が直前 observation と異なるイベントだけを抽出して返す。
+
+        各イベントの形:
+            {
+                "at": <変化が観測された Unix timestamp>,
+                "from_status": <直前 observation の status>,
+                "to_status": <現在 observation の status>,
+                "response_time_ms": <現在 observation の response_time_ms (小数点 2 桁)>,
+            }
+
+        初回 observation (直前が無い) は `from_status` が定義できないため
+        イベントとして扱わない。since/until は records レベルのフィルタ
+        として適用してから走査するため、ウィンドウ境界で「直前」が範囲外
+        にあっても結果が崩れない（その場合は「ウィンドウ内の最古」が
+        ベースラインとして扱われる）。
+
+        並び順は呼び元で `order` クエリ要求に従って必要なら反転する。
+        ここでは常に timestamp 昇順で返す。
+        """
+        records_snapshot = self.filter(service=service, since=since, until=until)
+        # filter() は records の挿入順（= 観測順）をそのまま保つが、
+        # 別経路で順序が崩れた場合の保険として timestamp 昇順でソートしておく。
+        records_snapshot.sort(key=lambda r: r.timestamp)
+        events: list[dict] = []
+        previous_status: str | None = None
+        for r in records_snapshot:
+            if previous_status is not None and r.status != previous_status:
+                events.append({
+                    "at": r.timestamp,
+                    "from_status": previous_status,
+                    "to_status": r.status,
+                    "response_time_ms": round(r.response_time_ms, 2),
+                })
+            previous_status = r.status
+        return events
+
     def has_records_for_service(
         self,
         service: str,
@@ -1187,6 +1230,101 @@ def get_service_timeseries(
         "bucket_seconds": bucket_seconds,
         "count": len(buckets),
         "buckets": buckets,
+    }
+
+
+@app.get("/metrics/services/{service_name}/status_changes")
+def get_service_status_changes(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみを対象にする",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみを対象にする",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="ソート順（at の昇順 / 降順）",
+    ),
+):
+    """単一サービスのステータス遷移イベントを時系列順に返す。
+
+    `/metrics?service=X&sort=timestamp` をクライアント側で順次比較すれば等価な結果は
+    得られるが、ペイロード（全 observation）の転送コストが高く、ロジックが各 UI
+    に分散するのを避けるためサーバ側で集約する。
+
+    レスポンス:
+        {
+          "service": <service_name>,
+          "count": <ページ内件数>,
+          "total": <since/until 範囲内の遷移総数>,
+          "limit": <limit>,
+          "offset": <offset>,
+          "order": <"asc" or "desc">,
+          "changes": [
+            {"at": ..., "from_status": ..., "to_status": ..., "response_time_ms": ...},
+            ...
+          ]
+        }
+
+    変化点が 1 件も無い場合（観測が全て同じステータス、または observation が 1 件のみ）は
+    `total: 0` / `changes: []` を返す。ただし、対象サービスのレコードがウィンドウ範囲内
+    に 1 件も無い場合は 404 を返す（`/metrics/services/{service_name}` 等とセマンティクス
+    を揃える）。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    if not store.has_records_for_service(service=normalized, since=since, until=until):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+
+    events = store.status_changes(service=normalized, since=since, until=until)
+    if order == "desc":
+        events.reverse()
+    total = len(events)
+    page = events[offset:offset + limit]
+    return {
+        "service": normalized,
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "order": order,
+        "changes": page,
     }
 
 
