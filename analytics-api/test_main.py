@@ -2395,3 +2395,131 @@ def test_metrics_store_has_records_for_service_unit():
     assert s.has_records_for_service("web", since=50, until=150) is True
     assert s.has_records_for_service("web", since=500) is False
     assert s.has_records_for_service("web", until=50) is False
+
+
+# ---- /metrics/services/{service_name}/status_changes ----
+
+def _post_metric_with_timestamp(service: str, status: str, response_time_ms: float, ts: float):
+    resp = client.post(
+        "/metrics",
+        json={
+            "service": service,
+            "status": status,
+            "response_time_ms": response_time_ms,
+            "timestamp": ts,
+        },
+    )
+    assert resp.status_code == 201
+
+
+def test_service_status_changes_404_when_service_has_no_data():
+    resp = client.get("/metrics/services/missing/status_changes")
+    assert resp.status_code == 404
+
+
+def test_service_status_changes_empty_when_no_transitions():
+    # 全観測が同一ステータスなら遷移は 0 件だが、サービス自体は存在するので 200。
+    for ts in (100.0, 200.0, 300.0):
+        _post_metric_with_timestamp("web", "healthy", 10.0, ts)
+    resp = client.get("/metrics/services/web/status_changes")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["total"] == 0
+    assert data["count"] == 0
+    assert data["changes"] == []
+
+
+def test_service_status_changes_returns_transitions_in_order():
+    # healthy -> unhealthy -> healthy の 2 回遷移
+    _post_metric_with_timestamp("web", "healthy", 10.0, 100.0)
+    _post_metric_with_timestamp("web", "healthy", 12.0, 150.0)
+    _post_metric_with_timestamp("web", "unhealthy", 1800.0, 200.0)
+    _post_metric_with_timestamp("web", "unhealthy", 1900.0, 250.0)
+    _post_metric_with_timestamp("web", "healthy", 120.0, 300.0)
+    resp = client.get("/metrics/services/web/status_changes")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["count"] == 2
+    assert data["order"] == "asc"
+    changes = data["changes"]
+    assert changes[0]["at"] == 200.0
+    assert changes[0]["from_status"] == "healthy"
+    assert changes[0]["to_status"] == "unhealthy"
+    assert changes[0]["response_time_ms"] == 1800.0
+    assert changes[1]["at"] == 300.0
+    assert changes[1]["from_status"] == "unhealthy"
+    assert changes[1]["to_status"] == "healthy"
+    assert changes[1]["response_time_ms"] == 120.0
+
+
+def test_service_status_changes_order_desc():
+    _post_metric_with_timestamp("api", "healthy", 5.0, 10.0)
+    _post_metric_with_timestamp("api", "degraded", 80.0, 20.0)
+    _post_metric_with_timestamp("api", "unhealthy", 500.0, 30.0)
+    resp = client.get("/metrics/services/api/status_changes?order=desc")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["order"] == "desc"
+    assert data["changes"][0]["at"] == 30.0
+    assert data["changes"][0]["to_status"] == "unhealthy"
+    assert data["changes"][1]["at"] == 20.0
+
+
+def test_service_status_changes_since_until_filter():
+    # since/until でウィンドウ内に絞った場合、ウィンドウ内最古がベースライン扱いで
+    # それ以降の遷移だけが返る。
+    _post_metric_with_timestamp("db", "healthy", 5.0, 10.0)
+    _post_metric_with_timestamp("db", "unhealthy", 600.0, 20.0)  # 遷移1
+    _post_metric_with_timestamp("db", "unhealthy", 700.0, 30.0)
+    _post_metric_with_timestamp("db", "healthy", 12.0, 40.0)  # 遷移2
+    _post_metric_with_timestamp("db", "degraded", 250.0, 50.0)  # 遷移3
+    # since=25, until=45 → 観測は [30, 40] のみ。30 がベースラインなので 40 で遷移1件のみ。
+    resp = client.get("/metrics/services/db/status_changes?since=25&until=45")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["changes"][0]["at"] == 40.0
+    assert data["changes"][0]["from_status"] == "unhealthy"
+    assert data["changes"][0]["to_status"] == "healthy"
+
+
+def test_service_status_changes_pagination():
+    statuses = ["healthy", "unhealthy", "healthy", "unhealthy", "healthy"]
+    for i, st in enumerate(statuses):
+        _post_metric_with_timestamp("ws", st, float(10 + i), float(100 + i * 10))
+    resp = client.get("/metrics/services/ws/status_changes?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 4
+    assert data["count"] == 2
+    assert data["limit"] == 2
+    assert data["offset"] == 1
+
+
+def test_service_status_changes_rejects_since_greater_than_until():
+    _post_metric_with_timestamp("svc", "healthy", 1.0, 100.0)
+    resp = client.get("/metrics/services/svc/status_changes?since=500&until=100")
+    assert resp.status_code == 400
+
+
+def test_service_status_changes_rejects_blank_path():
+    # path に空白だけを送ると 400
+    resp = client.get("/metrics/services/%20/status_changes")
+    assert resp.status_code == 400
+
+
+def test_metrics_store_status_changes_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=1.0, timestamp=10.0))
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=2.0, timestamp=20.0))
+    s.add(MetricRecord(service="web", status="unhealthy", response_time_ms=999.0, timestamp=30.0))
+    s.add(MetricRecord(service="other", status="healthy", response_time_ms=3.0, timestamp=25.0))
+    events = s.status_changes("web")
+    assert len(events) == 1
+    assert events[0]["at"] == 30.0
+    assert events[0]["from_status"] == "healthy"
+    assert events[0]["to_status"] == "unhealthy"
+    assert events[0]["response_time_ms"] == 999.0
