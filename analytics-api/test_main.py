@@ -2523,3 +2523,126 @@ def test_metrics_store_status_changes_unit():
     assert events[0]["from_status"] == "healthy"
     assert events[0]["to_status"] == "unhealthy"
     assert events[0]["response_time_ms"] == 999.0
+
+
+# ---- /metrics/services/{service_name}/by_status ----
+
+def test_service_by_status_basic():
+    _post_metric_with_timestamp("web", "healthy", 50.0, 10.0)
+    _post_metric_with_timestamp("web", "healthy", 60.0, 20.0)
+    _post_metric_with_timestamp("web", "degraded", 500.0, 30.0)
+    _post_metric_with_timestamp("other", "healthy", 1.0, 40.0)
+    resp = client.get("/metrics/services/web/by_status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["total"] == 3
+    by = data["by_status"]
+    # 全 ALLOWED_STATUSES が必ず存在
+    assert set(by.keys()) == {"healthy", "unhealthy", "degraded", "unknown"}
+    assert by["healthy"]["count"] == 2
+    assert by["degraded"]["count"] == 1
+    assert by["unhealthy"]["count"] == 0
+    assert by["unknown"]["count"] == 0
+    assert by["healthy"]["avg_response_ms"] == 55.0
+    assert by["healthy"]["min_response_ms"] == 50.0
+    assert by["healthy"]["max_response_ms"] == 60.0
+    assert by["healthy"]["first_seen"] == 10.0
+    assert by["healthy"]["last_seen"] == 20.0
+    assert by["degraded"]["first_seen"] == 30.0
+    assert by["degraded"]["last_seen"] == 30.0
+
+
+def test_service_by_status_empty_status_block_has_zeros():
+    _post_metric_with_timestamp("svc", "healthy", 10.0, 1.0)
+    resp = client.get("/metrics/services/svc/by_status")
+    body = resp.json()["by_status"]
+    for status_name in ("unhealthy", "degraded", "unknown"):
+        assert body[status_name]["count"] == 0
+        assert body[status_name]["avg_response_ms"] == 0.0
+        assert body[status_name]["min_response_ms"] == 0.0
+        assert body[status_name]["max_response_ms"] == 0.0
+        assert body[status_name]["p50_response_ms"] == 0.0
+        assert body[status_name]["p95_response_ms"] == 0.0
+        assert body[status_name]["p99_response_ms"] == 0.0
+        assert body[status_name]["first_seen"] is None
+        assert body[status_name]["last_seen"] is None
+
+
+def test_service_by_status_404_when_no_records():
+    resp = client.get("/metrics/services/missing/by_status")
+    assert resp.status_code == 404
+
+
+def test_service_by_status_404_when_only_other_services():
+    _post_metric_with_timestamp("other", "healthy", 1.0, 1.0)
+    resp = client.get("/metrics/services/web/by_status")
+    assert resp.status_code == 404
+
+
+def test_service_by_status_since_until_filter():
+    _post_metric_with_timestamp("web", "healthy", 10.0, 5.0)
+    _post_metric_with_timestamp("web", "degraded", 200.0, 50.0)
+    _post_metric_with_timestamp("web", "healthy", 11.0, 95.0)
+    resp = client.get("/metrics/services/web/by_status?since=10&until=80")
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["by_status"]["degraded"]["count"] == 1
+    assert body["by_status"]["healthy"]["count"] == 0
+
+
+def test_service_by_status_404_when_filter_excludes_all():
+    _post_metric_with_timestamp("web", "healthy", 1.0, 100.0)
+    resp = client.get("/metrics/services/web/by_status?since=200")
+    assert resp.status_code == 404
+
+
+def test_service_by_status_rejects_since_greater_than_until():
+    _post_metric_with_timestamp("svc", "healthy", 1.0, 100.0)
+    resp = client.get("/metrics/services/svc/by_status?since=500&until=100")
+    assert resp.status_code == 400
+
+
+def test_service_by_status_rejects_blank_path():
+    resp = client.get("/metrics/services/%20/by_status")
+    assert resp.status_code == 400
+
+
+def test_service_by_status_percentiles_single_value():
+    # 1 件のみだと p50=p95=p99=min=max=avg
+    _post_metric_with_timestamp("web", "healthy", 42.0, 10.0)
+    body = client.get("/metrics/services/web/by_status").json()
+    h = body["by_status"]["healthy"]
+    assert h["count"] == 1
+    assert h["p50_response_ms"] == 42.0
+    assert h["p95_response_ms"] == 42.0
+    assert h["p99_response_ms"] == 42.0
+    assert h["avg_response_ms"] == 42.0
+    assert h["min_response_ms"] == 42.0
+    assert h["max_response_ms"] == 42.0
+
+
+def test_service_by_status_mixed_statuses_independent_percentiles():
+    # healthy: 10, 20, 30 → p50=20
+    _post_metric_with_timestamp("web", "healthy", 10.0, 1.0)
+    _post_metric_with_timestamp("web", "healthy", 20.0, 2.0)
+    _post_metric_with_timestamp("web", "healthy", 30.0, 3.0)
+    # degraded: 1000, 2000 → p50=1500
+    _post_metric_with_timestamp("web", "degraded", 1000.0, 4.0)
+    _post_metric_with_timestamp("web", "degraded", 2000.0, 5.0)
+    body = client.get("/metrics/services/web/by_status").json()
+    assert body["by_status"]["healthy"]["p50_response_ms"] == 20.0
+    assert body["by_status"]["degraded"]["p50_response_ms"] == 1500.0
+
+
+def test_metrics_store_service_by_status_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=50.0, timestamp=10.0))
+    s.add(MetricRecord(service="web", status="degraded", response_time_ms=500.0, timestamp=20.0))
+    s.add(MetricRecord(service="other", status="healthy", response_time_ms=1.0, timestamp=30.0))
+    result = s.service_by_status("web")
+    assert result is not None
+    assert result["total"] == 2
+    assert result["by_status"]["healthy"]["count"] == 1
+    assert result["by_status"]["degraded"]["count"] == 1
+    assert s.service_by_status("missing") is None
