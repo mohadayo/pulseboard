@@ -347,6 +347,70 @@ class MetricsStore:
             previous_status = r.status
         return events
 
+    def service_by_status(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict | None:
+        """単一サービスの観測をステータス別にグルーピングして集計結果を返す。
+
+        `service_detail` は status_counts (件数のみ) を返すが、UI で
+        「healthy のとき p95=80ms、degraded のとき p95=2000ms」のように
+        ステータス別のレスポンス時間分布を見たい場合に使う。
+
+        全 `ALLOWED_STATUSES` をキーに含み（観測 0 件のステータスも `count=0` で埋める）、
+        UI 側で存在チェックなしで参照できるようにする。各ステータスのブロックは:
+            count / avg_response_ms / min_response_ms / max_response_ms /
+            p50_response_ms / p95_response_ms / p99_response_ms /
+            first_seen / last_seen
+
+        観測 0 件のステータスのレスポンス時間統計は `0.0`、`first_seen` / `last_seen`
+        は `None` を返す（`/metrics/overview` の percentile が空集合で 0.0 を返す挙動と整合）。
+        対象サービスのレコードが (since/until 範囲内に) 1 件も無い場合は `None` を返す。
+        """
+        records_snapshot = self.filter(service=service, since=since, until=until)
+        if not records_snapshot:
+            return None
+
+        per_status: dict[str, dict] = {
+            s: {"times": [], "first_seen": None, "last_seen": None}
+            for s in ALLOWED_STATUSES
+        }
+        for r in records_snapshot:
+            bucket = per_status.setdefault(
+                r.status,
+                {"times": [], "first_seen": None, "last_seen": None},
+            )
+            bucket["times"].append(r.response_time_ms)
+            if bucket["first_seen"] is None or r.timestamp < bucket["first_seen"]:
+                bucket["first_seen"] = r.timestamp
+            if bucket["last_seen"] is None or r.timestamp > bucket["last_seen"]:
+                bucket["last_seen"] = r.timestamp
+
+        by_status: dict[str, dict] = {}
+        for status_name, bucket in per_status.items():
+            times = bucket["times"]
+            sorted_times = sorted(times)
+            count = len(sorted_times)
+            avg = sum(times) / count if count else 0.0
+            by_status[status_name] = {
+                "count": count,
+                "avg_response_ms": round(avg, 2),
+                "min_response_ms": round(sorted_times[0], 2) if sorted_times else 0.0,
+                "max_response_ms": round(sorted_times[-1], 2) if sorted_times else 0.0,
+                "p50_response_ms": round(_percentile(sorted_times, 50), 2),
+                "p95_response_ms": round(_percentile(sorted_times, 95), 2),
+                "p99_response_ms": round(_percentile(sorted_times, 99), 2),
+                "first_seen": bucket["first_seen"],
+                "last_seen": bucket["last_seen"],
+            }
+        return {
+            "service": service,
+            "total": len(records_snapshot),
+            "by_status": by_status,
+        }
+
     def has_records_for_service(
         self,
         service: str,
@@ -1326,6 +1390,73 @@ def get_service_status_changes(
         "order": order,
         "changes": page,
     }
+
+
+@app.get("/metrics/services/{service_name}/by_status")
+def get_service_by_status(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ集計",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ集計",
+    ),
+):
+    """単一サービスの観測を `status` 別にグルーピングしてレスポンス時間統計を返す。
+
+    既存 `/metrics/services/{service_name}` は `status_counts`（件数のみ）と全体の
+    percentile を返すが、「healthy のとき p95=80ms / degraded のとき p95=2000ms」のように
+    ステータスごとのレスポンス時間分布を可視化したい場面では情報が足りなかった。
+    本エンドポイントは各ステータスについて count / avg / min / max / p50 / p95 / p99 /
+    first_seen / last_seen を返し、UI 側で 1 リクエストでドリルダウン表示を可能にする。
+
+    レスポンス:
+        {
+          "service": <service_name>,
+          "total": <since/until 範囲内の全 observation 件数>,
+          "by_status": {
+            "healthy":   {count, avg_response_ms, min, max, p50, p95, p99, first_seen, last_seen},
+            "unhealthy": {...},
+            "degraded":  {...},
+            "unknown":   {...}
+          }
+        }
+
+    `by_status` は `ALLOWED_STATUSES` の全キーを必ず含み、観測 0 件のステータスでも
+    count=0 / 統計 0.0 / first_seen=last_seen=null を埋めるため、UI は存在チェック不要。
+    対象サービスのレコードが範囲内に 1 件も無い場合は 404 を返す
+    （`/metrics/services/{service_name}` 等とセマンティクスを揃える）。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    detail = store.service_by_status(service=normalized, since=since, until=until)
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+    return detail
 
 
 if __name__ == "__main__":
