@@ -437,6 +437,42 @@ class MetricsStore:
                 latest = r
         return latest
 
+    def recent_for_service(
+        self,
+        service: str,
+        limit: int,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[MetricRecord]:
+        """対象サービスの since/until 範囲内で `timestamp` 降順の直近 `limit` 件を返す。
+
+        ダッシュボードのサービス詳細画面の「最近の N 件のチェック履歴」用途向け。
+        `service_detail` の percentile / status_counts / uptime_pct を計算しないため
+        軽量で、`latest_for_service` の N 件版に相当する。
+
+        同 timestamp の重複は `add()` の挿入順を保つ（`latest_for_service` の後勝ち
+        セマンティクスと同じく、同 timestamp は「より後に追加された方が新しい」と扱う）。
+        範囲内のレコードが `limit` 未満ならその分だけ返す。`limit <= 0` の場合は空配列。
+        """
+        if limit <= 0:
+            return []
+        with self._lock:
+            snapshot = list(self.records)
+        # filter は service / since / until のみ反映。q / status は本ヘルパーでは
+        # 受け取らない（呼び元エンドポイントの仕様）。
+        candidates: list[tuple[int, MetricRecord]] = []
+        for idx, r in enumerate(snapshot):
+            if r.service != service:
+                continue
+            if since is not None and r.timestamp < since:
+                continue
+            if until is not None and r.timestamp > until:
+                continue
+            candidates.append((idx, r))
+        # timestamp 降順、同 timestamp は挿入順の後（= idx が大きい方）を先に。
+        candidates.sort(key=lambda t: (t[1].timestamp, t[0]), reverse=True)
+        return [r for _, r in candidates[:limit]]
+
     def has_records_for_service(
         self,
         service: str,
@@ -1299,6 +1335,79 @@ def get_service_latest(
         "status": latest.status,
         "response_time_ms": round(latest.response_time_ms, 2),
         "timestamp": latest.timestamp,
+    }
+
+
+@app.get("/metrics/services/{service_name}/recent")
+def get_service_recent(
+    service_name: str,
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=200,
+        description="返す observation 件数の上限（1〜200）。",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の observation のみ対象",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の observation のみ対象",
+    ),
+):
+    """単一サービスの直近 N 件の observation を `timestamp` 降順で返す。
+
+    `/metrics/services/{service_name}` はフル集約 (percentile / uptime_pct / status_counts)
+    を計算するため、ダッシュボードの「最近のチェック履歴」一覧用途には過剰。
+    本エンドポイントは生 observation を新しい順に返すだけで、集計は一切しない。
+
+    `since` / `until` クエリで対象範囲を絞れる（他の `/metrics/services/{name}/*` と整合）。
+    範囲内にレコードが 1 件も無い場合は 404。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    items = store.recent_for_service(
+        service=normalized,
+        limit=limit,
+        since=since,
+        until=until,
+    )
+    if not items:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+    return {
+        "service": normalized,
+        "count": len(items),
+        "items": [
+            {
+                "status": r.status,
+                "response_time_ms": round(r.response_time_ms, 2),
+                "timestamp": r.timestamp,
+            }
+            for r in items
+        ],
     }
 
 
