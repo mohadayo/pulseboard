@@ -174,6 +174,7 @@ Response:
 | GET | `/metrics/count` | フィルタ後のレコード件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/services/{service_name}/timeseries` | 単一サービスに絞った時系列バケット集計（`?bucket_seconds=` / `?status=` / `?since=` / `?until=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/latest` | 単一サービスの直近 1 件の observation を `{service, status, response_time_ms, timestamp}` 形で返す軽量エンドポイント（`?since=` / `?until=`）。該当サービスが存在しなければ 404 |
 
 #### Delete Metrics
 
