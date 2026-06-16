@@ -2754,3 +2754,147 @@ def test_metrics_store_latest_for_service_unit():
     assert s.latest_for_service("web", since=10.0) is None
     # 該当サービス無しなら None
     assert s.latest_for_service("missing") is None
+
+
+# ---- /metrics/services/{service_name}/recent ----
+
+
+def test_service_recent_returns_records_in_desc_order():
+    # 同サービスの観測を timestamp 降順で返す。
+    _post("web", "healthy", 12.5, 10.0)
+    _post("web", "unhealthy", 1500.0, 30.0)
+    _post("web", "degraded", 800.0, 20.0)
+    resp = client.get("/metrics/services/web/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["count"] == 3
+    assert [item["timestamp"] for item in data["items"]] == [30.0, 20.0, 10.0]
+    assert [item["status"] for item in data["items"]] == ["unhealthy", "degraded", "healthy"]
+
+
+def test_service_recent_respects_limit():
+    # limit より多い observation がある場合、先頭 limit 件だけ返る。
+    for ts in range(1, 11):
+        _post("web", "healthy", 10.0, float(ts))
+    resp = client.get("/metrics/services/web/recent?limit=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 3
+    assert [item["timestamp"] for item in data["items"]] == [10.0, 9.0, 8.0]
+
+
+def test_service_recent_default_limit_is_10():
+    # limit を渡さなければデフォルト 10 件まで。
+    for ts in range(1, 21):
+        _post("web", "healthy", 10.0, float(ts))
+    resp = client.get("/metrics/services/web/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 10
+    assert data["items"][0]["timestamp"] == 20.0
+    assert data["items"][-1]["timestamp"] == 11.0
+
+
+def test_service_recent_ignores_other_services():
+    # 別 service のレコードは無視される。
+    _post("api", "healthy", 10.0, 1000.0)
+    _post("web", "unhealthy", 50.0, 999.0)
+    _post("web", "degraded", 25.0, 998.0)
+    resp = client.get("/metrics/services/web/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert all(item["timestamp"] in (999.0, 998.0) for item in data["items"])
+    assert data["count"] == 2
+
+
+def test_service_recent_404_when_service_has_no_records():
+    _post("api", "healthy", 10.0, 1000.0)
+    resp = client.get("/metrics/services/missing/recent")
+    assert resp.status_code == 404
+    assert "missing" in resp.json()["detail"]
+
+
+def test_service_recent_404_when_range_excludes_all_records():
+    _post("web", "healthy", 10.0, 100.0)
+    resp = client.get("/metrics/services/web/recent?since=200&until=300")
+    assert resp.status_code == 404
+
+
+def test_service_recent_since_until_filter():
+    # 範囲内のみから直近順に返る。
+    _post("web", "healthy", 10.0, 50.0)
+    _post("web", "degraded", 800.0, 100.0)
+    _post("web", "unhealthy", 1500.0, 200.0)
+    _post("web", "healthy", 12.0, 80.0)
+    resp = client.get("/metrics/services/web/recent?since=60&until=150")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [item["timestamp"] for item in data["items"]] == [100.0, 80.0]
+
+
+def test_service_recent_rejects_since_greater_than_until():
+    resp = client.get("/metrics/services/web/recent?since=500&until=100")
+    assert resp.status_code == 400
+
+
+def test_service_recent_rejects_negative_since():
+    resp = client.get("/metrics/services/web/recent?since=-1")
+    assert resp.status_code == 422
+
+
+def test_service_recent_rejects_limit_above_cap():
+    # `le=200` を超える limit は 422 で弾かれる。
+    resp = client.get("/metrics/services/web/recent?limit=999")
+    assert resp.status_code == 422
+
+
+def test_service_recent_rejects_limit_zero():
+    # `ge=1` を満たさない limit=0 は 422 で弾かれる。
+    resp = client.get("/metrics/services/web/recent?limit=0")
+    assert resp.status_code == 422
+
+
+def test_service_recent_rejects_blank_service_name():
+    resp = client.get("/metrics/services/%20/recent")
+    assert resp.status_code == 400
+
+
+def test_service_recent_round_trips_response_time():
+    # response_time_ms は小数点 2 桁丸めで返る（store の挙動と整合）。
+    _post("web", "healthy", 12.345, 10.0)
+    resp = client.get("/metrics/services/web/recent")
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["response_time_ms"] == 12.35
+
+
+def test_service_recent_same_timestamp_uses_insertion_order():
+    # 同 timestamp の重複は挿入順の後（latest_for_service と同じ後勝ち順）が先頭。
+    _post("web", "healthy", 1.0, 50.0)
+    _post("web", "degraded", 2.0, 50.0)
+    _post("web", "unhealthy", 3.0, 50.0)
+    resp = client.get("/metrics/services/web/recent?limit=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 同 timestamp なので response_time_ms で区別。後に挿入された順に返る。
+    assert [item["response_time_ms"] for item in data["items"]] == [3.0, 2.0, 1.0]
+
+
+def test_metrics_store_recent_for_service_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=1.0))
+    s.add(MetricRecord(service="web", status="degraded", response_time_ms=20.0, timestamp=3.0))
+    s.add(MetricRecord(service="web", status="unhealthy", response_time_ms=30.0, timestamp=2.0))
+    s.add(MetricRecord(service="api", status="healthy", response_time_ms=5.0, timestamp=4.0))
+    result = s.recent_for_service("web", limit=10)
+    assert [r.timestamp for r in result] == [3.0, 2.0, 1.0]
+    # limit クランプ
+    result = s.recent_for_service("web", limit=2)
+    assert [r.timestamp for r in result] == [3.0, 2.0]
+    # 範囲外なら空
+    assert s.recent_for_service("web", limit=10, since=10.0) == []
+    # 該当サービス無しなら空
+    assert s.recent_for_service("missing", limit=10) == []
+    # limit=0 は空
+    assert s.recent_for_service("web", limit=0) == []
