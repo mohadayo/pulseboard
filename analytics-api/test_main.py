@@ -2646,3 +2646,111 @@ def test_metrics_store_service_by_status_unit():
     assert result["by_status"]["healthy"]["count"] == 1
     assert result["by_status"]["degraded"]["count"] == 1
     assert s.service_by_status("missing") is None
+
+
+# ---- /metrics/services/{service_name}/latest ----
+
+
+def _post(service: str, status: str, response_time_ms: float, timestamp: float) -> None:
+    """テスト用の直接 store 投入ヘルパ。POST 経路を経由しないため、
+    explicit な timestamp を強制でき、テストの順序依存を避けられる。"""
+    store.add(
+        MetricRecord(
+            service=service,
+            status=status,
+            response_time_ms=response_time_ms,
+            timestamp=timestamp,
+        )
+    )
+
+
+def test_service_latest_returns_most_recent_record():
+    # 同サービス内で最新 timestamp のレコードが返る。
+    _post("web", "healthy", 12.5, 10.0)
+    _post("web", "degraded", 800.0, 30.0)
+    _post("web", "unhealthy", 1500.0, 20.0)
+    resp = client.get("/metrics/services/web/latest")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {
+        "service": "web",
+        "status": "degraded",
+        "response_time_ms": 800.0,
+        "timestamp": 30.0,
+    }
+
+
+def test_service_latest_ignores_other_services():
+    # 別 service のレコードは候補から除外される。
+    _post("api", "healthy", 10.0, 1000.0)
+    _post("web", "unhealthy", 50.0, 999.0)
+    resp = client.get("/metrics/services/web/latest")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["timestamp"] == 999.0
+
+
+def test_service_latest_404_when_service_has_no_records():
+    _post("api", "healthy", 10.0, 1000.0)
+    resp = client.get("/metrics/services/missing/latest")
+    assert resp.status_code == 404
+    assert "missing" in resp.json()["detail"]
+
+
+def test_service_latest_404_when_range_excludes_all_records():
+    # since/until を当てると範囲外になり 404 になる。
+    _post("web", "healthy", 10.0, 100.0)
+    resp = client.get("/metrics/services/web/latest?since=200&until=300")
+    assert resp.status_code == 404
+
+
+def test_service_latest_since_until_filter():
+    # 範囲内のみから最新が選ばれる。
+    _post("web", "healthy", 10.0, 50.0)
+    _post("web", "degraded", 800.0, 100.0)
+    _post("web", "unhealthy", 1500.0, 200.0)
+    resp = client.get("/metrics/services/web/latest?since=60&until=150")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["timestamp"] == 100.0
+    assert data["status"] == "degraded"
+
+
+def test_service_latest_rejects_since_greater_than_until():
+    resp = client.get("/metrics/services/web/latest?since=500&until=100")
+    assert resp.status_code == 400
+
+
+def test_service_latest_rejects_negative_since():
+    resp = client.get("/metrics/services/web/latest?since=-1")
+    assert resp.status_code == 422
+
+
+def test_service_latest_rejects_blank_service_name():
+    # %20 を path に入れると "  " として渡るので strip 後に空になる。
+    resp = client.get("/metrics/services/%20/latest")
+    assert resp.status_code == 400
+
+
+def test_service_latest_round_trips_response_time():
+    # response_time_ms は小数点 2 桁丸めで返る（store の挙動と整合）。
+    _post("web", "healthy", 12.345, 10.0)
+    resp = client.get("/metrics/services/web/latest")
+    assert resp.status_code == 200
+    assert resp.json()["response_time_ms"] == 12.35
+
+
+def test_metrics_store_latest_for_service_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=1.0))
+    s.add(MetricRecord(service="web", status="degraded", response_time_ms=20.0, timestamp=3.0))
+    s.add(MetricRecord(service="api", status="healthy", response_time_ms=5.0, timestamp=2.0))
+    latest = s.latest_for_service("web")
+    assert latest is not None
+    assert latest.timestamp == 3.0
+    assert latest.status == "degraded"
+    # 範囲外なら None
+    assert s.latest_for_service("web", since=10.0) is None
+    # 該当サービス無しなら None
+    assert s.latest_for_service("missing") is None
