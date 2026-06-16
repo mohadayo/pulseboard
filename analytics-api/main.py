@@ -411,6 +411,32 @@ class MetricsStore:
             "by_status": by_status,
         }
 
+    def latest_for_service(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> MetricRecord | None:
+        """対象サービスの since/until 範囲内で最新（timestamp 最大）の observation を返す。
+
+        範囲内にレコードが無ければ `None`。同 timestamp の重複時は、`add()` の挿入順を
+        保つため後勝ち（= 同 timestamp の最後に追加された observation を返す）とする。
+        ダッシュボードのバッジ表示など「直近 1 件だけ欲しい」用途向け。
+        """
+        with self._lock:
+            snapshot = list(self.records)
+        latest: MetricRecord | None = None
+        for r in snapshot:
+            if r.service != service:
+                continue
+            if since is not None and r.timestamp < since:
+                continue
+            if until is not None and r.timestamp > until:
+                continue
+            if latest is None or r.timestamp >= latest.timestamp:
+                latest = r
+        return latest
+
     def has_records_for_service(
         self,
         service: str,
@@ -1217,6 +1243,63 @@ def get_service_detail(
             detail=f"No metrics found for service '{normalized}'",
         )
     return detail
+
+
+@app.get("/metrics/services/{service_name}/latest")
+def get_service_latest(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の observation のみ対象",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の observation のみ対象",
+    ),
+):
+    """単一サービスの最新 observation 1 件を `{service, status, response_time_ms, timestamp}` で返す。
+
+    `GET /metrics/services/{service_name}` はフル集約 (percentile / status_counts / uptime_pct)
+    を返すため「現在のステータス・直近の応答時間だけを見たい」UI 用途では過剰。
+    本エンドポイントはレスポンス時間統計や集計を計算せず、対象範囲内で `timestamp` 最大
+    の 1 件をそのまま返す軽量エンドポイント。
+
+    `since` / `until` クエリで対象範囲を絞れる（他の `/metrics/services/{name}/*` と整合）。
+    範囲内にレコードが 1 件も無い場合は 404。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    latest = store.latest_for_service(service=normalized, since=since, until=until)
+    if latest is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+    return {
+        "service": latest.service,
+        "status": latest.status,
+        "response_time_ms": round(latest.response_time_ms, 2),
+        "timestamp": latest.timestamp,
+    }
 
 
 @app.get("/metrics/services/{service_name}/timeseries")
