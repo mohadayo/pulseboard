@@ -411,6 +411,85 @@ class MetricsStore:
             "by_status": by_status,
         }
 
+    def incidents(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict]:
+        """対象サービスの records を timestamp 昇順で走査し、
+        `healthy` 以外のステータスが連続する区間を 1 つのインシデントへ畳んで返す。
+
+        各インシデントの形:
+            {
+                "started_at": <最初の非 healthy observation の timestamp>,
+                "ended_at": <最後の非 healthy observation の timestamp>,
+                "duration_seconds": <ended_at - started_at>,
+                "ongoing": <ウィンドウ末端まで非 healthy が続いた場合 True>,
+                "statuses": [<observation で観測された非 healthy ステータスの集合をソート>],
+                "observation_count": <インシデント中の observation 件数>,
+                "max_response_time_ms": <インシデント中の最大 response_time (小数点 2 桁)>,
+            }
+
+        ウィンドウ境界で「直前の healthy」が範囲外にあっても結果が崩れないよう、
+        since/until は records レベルのフィルタとして適用してから走査する
+        （= ウィンドウ内最古の observation がインシデント start として扱われる）。
+
+        並び順は常に `started_at` 昇順。呼び元で `order` クエリ要求に従って反転する。
+        """
+        records_snapshot = self.filter(service=service, since=since, until=until)
+        records_snapshot.sort(key=lambda r: r.timestamp)
+
+        incidents_out: list[dict] = []
+        cur_start: float | None = None
+        cur_end: float | None = None
+        cur_statuses: set[str] = set()
+        cur_count = 0
+        cur_max_rt = 0.0
+
+        def _flush(ongoing: bool) -> None:
+            # cur_start / cur_end が None のときには呼ばれない前提。
+            duration = 0.0
+            if cur_end is not None and cur_start is not None:
+                duration = cur_end - cur_start
+            incidents_out.append({
+                "started_at": cur_start,
+                "ended_at": cur_end,
+                "duration_seconds": round(duration, 2),
+                "ongoing": ongoing,
+                "statuses": sorted(cur_statuses),
+                "observation_count": cur_count,
+                "max_response_time_ms": round(cur_max_rt, 2),
+            })
+
+        for r in records_snapshot:
+            if r.status != "healthy":
+                if cur_start is None:
+                    cur_start = r.timestamp
+                    cur_end = r.timestamp
+                    cur_statuses = {r.status}
+                    cur_count = 1
+                    cur_max_rt = r.response_time_ms
+                else:
+                    cur_end = r.timestamp
+                    cur_statuses.add(r.status)
+                    cur_count += 1
+                    if r.response_time_ms > cur_max_rt:
+                        cur_max_rt = r.response_time_ms
+            else:
+                if cur_start is not None:
+                    _flush(ongoing=False)
+                    cur_start = None
+                    cur_end = None
+                    cur_statuses = set()
+                    cur_count = 0
+                    cur_max_rt = 0.0
+
+        if cur_start is not None:
+            _flush(ongoing=True)
+
+        return incidents_out
+
     def latest_for_service(
         self,
         service: str,
@@ -1649,6 +1728,107 @@ def get_service_by_status(
             detail=f"No metrics found for service '{normalized}'",
         )
     return detail
+
+
+@app.get("/metrics/services/{service_name}/incidents")
+def get_service_incidents(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ対象",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ対象",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="ソート順（started_at の昇順 / 降順）",
+    ),
+):
+    """単一サービスの「`healthy` 以外が連続した期間」をインシデントとして時系列順に返す。
+
+    `/metrics/services/{service_name}/status_changes` は遷移点のリストを返すが、
+    各 UI で隣り合う `healthy→non-healthy→healthy` を 1 イベントへ畳む必要があり、
+    集計ロジックが各クライアントに分散していた。本エンドポイントはサーバ側で
+    インシデント単位に集約し、`started_at` / `ended_at` / `duration_seconds` /
+    `ongoing` / `statuses` / `observation_count` / `max_response_time_ms` を返す。
+
+    レスポンス:
+        {
+          "service": <service_name>,
+          "count":  <ページ内件数>,
+          "total":  <ウィンドウ内のインシデント総数>,
+          "limit":  <limit>,
+          "offset": <offset>,
+          "order":  <"asc" or "desc">,
+          "incidents": [
+            {"started_at", "ended_at", "duration_seconds", "ongoing",
+             "statuses", "observation_count", "max_response_time_ms"},
+            ...
+          ]
+        }
+
+    インシデントが 1 件も無い（全 observation が `healthy`）場合は `total: 0`,
+    `incidents: []`。対象サービスのレコードが範囲内に 1 件も無い場合は 404 を返す
+    （他の `/metrics/services/{name}/*` とセマンティクスを揃える）。
+
+    `ongoing` はウィンドウ末端まで非 healthy が続いた場合に True。ウィンドウ外で
+    のちに healthy へ戻った可能性は判定できないため、「ウィンドウ内では未終了」
+    という意味で扱う。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    if not store.has_records_for_service(service=normalized, since=since, until=until):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+
+    incidents_list = store.incidents(service=normalized, since=since, until=until)
+    if order == "desc":
+        incidents_list.reverse()
+    total = len(incidents_list)
+    page = incidents_list[offset:offset + limit]
+    return {
+        "service": normalized,
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "order": order,
+        "incidents": page,
+    }
 
 
 if __name__ == "__main__":
