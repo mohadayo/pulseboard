@@ -2898,3 +2898,175 @@ def test_metrics_store_recent_for_service_unit():
     assert s.recent_for_service("missing", limit=10) == []
     # limit=0 は空
     assert s.recent_for_service("web", limit=0) == []
+
+
+# ---- /metrics/services/{service_name}/incidents ----
+
+
+def test_service_incidents_returns_404_when_no_records():
+    resp = client.get("/metrics/services/missing/incidents")
+    assert resp.status_code == 404
+
+
+def test_service_incidents_all_healthy_returns_empty_list():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "healthy", 11.0, 2.0)
+    resp = client.get("/metrics/services/web/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["total"] == 0
+    assert data["count"] == 0
+    assert data["incidents"] == []
+
+
+def test_service_incidents_collapses_consecutive_non_healthy_run():
+    # healthy → unhealthy → degraded → healthy で 1 インシデント。
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 200.0, 2.0)
+    _post("web", "degraded", 500.0, 3.0)
+    _post("web", "healthy", 12.0, 4.0)
+    resp = client.get("/metrics/services/web/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    inc = data["incidents"][0]
+    assert inc["started_at"] == 2.0
+    assert inc["ended_at"] == 3.0
+    assert inc["duration_seconds"] == 1.0
+    assert inc["ongoing"] is False
+    assert inc["statuses"] == ["degraded", "unhealthy"]
+    assert inc["observation_count"] == 2
+    # max は inc 中の最大 response_time
+    assert inc["max_response_time_ms"] == 500.0
+
+
+def test_service_incidents_separates_two_incidents_with_healthy_between():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("web", "degraded", 800.0, 4.0)
+    _post("web", "healthy", 12.0, 5.0)
+    resp = client.get("/metrics/services/web/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["incidents"][0]["started_at"] == 2.0
+    assert data["incidents"][0]["statuses"] == ["unhealthy"]
+    assert data["incidents"][1]["started_at"] == 4.0
+    assert data["incidents"][1]["statuses"] == ["degraded"]
+    assert all(inc["ongoing"] is False for inc in data["incidents"])
+
+
+def test_service_incidents_ongoing_when_window_ends_in_non_healthy():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 300.0, 2.0)
+    _post("web", "unhealthy", 350.0, 3.0)
+    resp = client.get("/metrics/services/web/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    inc = data["incidents"][0]
+    assert inc["started_at"] == 2.0
+    assert inc["ended_at"] == 3.0
+    assert inc["ongoing"] is True
+    assert inc["observation_count"] == 2
+    assert inc["max_response_time_ms"] == 350.0
+
+
+def test_service_incidents_starts_at_first_non_healthy_when_window_begins_in_outage():
+    # ウィンドウ先頭が非 healthy で始まるケース。直前の healthy が無くても
+    # ウィンドウ内最古の非 healthy observation を start として扱う。
+    _post("web", "degraded", 600.0, 1.0)
+    _post("web", "unhealthy", 700.0, 2.0)
+    _post("web", "healthy", 10.0, 3.0)
+    resp = client.get("/metrics/services/web/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    inc = data["incidents"][0]
+    assert inc["started_at"] == 1.0
+    assert inc["ended_at"] == 2.0
+    assert inc["ongoing"] is False
+    assert inc["statuses"] == ["degraded", "unhealthy"]
+
+
+def test_service_incidents_respects_since_until():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("web", "degraded", 800.0, 4.0)
+    _post("web", "healthy", 12.0, 5.0)
+    # since=3 から見ると 1 件目のインシデント (t=2) は範囲外。
+    resp = client.get("/metrics/services/web/incidents?since=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["incidents"][0]["started_at"] == 4.0
+
+
+def test_service_incidents_order_desc():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("web", "degraded", 800.0, 4.0)
+    _post("web", "healthy", 12.0, 5.0)
+    resp = client.get("/metrics/services/web/incidents?order=desc")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["order"] == "desc"
+    assert [inc["started_at"] for inc in data["incidents"]] == [4.0, 2.0]
+
+
+def test_service_incidents_limit_and_offset():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("web", "degraded", 200.0, 4.0)
+    _post("web", "healthy", 12.0, 5.0)
+    _post("web", "unhealthy", 300.0, 6.0)
+    _post("web", "healthy", 13.0, 7.0)
+    resp = client.get("/metrics/services/web/incidents?limit=1&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["count"] == 1
+    assert data["limit"] == 1
+    assert data["offset"] == 1
+    # offset=1 番目（asc）→ t=4 のインシデント
+    assert data["incidents"][0]["started_at"] == 4.0
+
+
+def test_service_incidents_rejects_since_greater_than_until():
+    _post("web", "unhealthy", 100.0, 5.0)
+    resp = client.get("/metrics/services/web/incidents?since=10&until=5")
+    assert resp.status_code == 400
+
+
+def test_service_incidents_rejects_blank_service_name():
+    resp = client.get("/metrics/services/%20/incidents")
+    assert resp.status_code == 400
+
+
+def test_service_incidents_rejects_limit_zero():
+    resp = client.get("/metrics/services/web/incidents?limit=0")
+    assert resp.status_code == 422
+
+
+def test_metrics_store_incidents_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=1.0))
+    s.add(MetricRecord(service="web", status="unhealthy", response_time_ms=200.0, timestamp=2.0))
+    s.add(MetricRecord(service="web", status="degraded", response_time_ms=500.0, timestamp=3.0))
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=4.0))
+    s.add(MetricRecord(service="api", status="unhealthy", response_time_ms=999.0, timestamp=2.0))
+    incidents = s.incidents("web")
+    assert len(incidents) == 1
+    inc = incidents[0]
+    assert inc["started_at"] == 2.0
+    assert inc["ended_at"] == 3.0
+    assert inc["duration_seconds"] == 1.0
+    assert inc["ongoing"] is False
+    assert inc["statuses"] == ["degraded", "unhealthy"]
+    assert inc["observation_count"] == 2
+    assert inc["max_response_time_ms"] == 500.0
