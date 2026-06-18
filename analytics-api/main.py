@@ -490,6 +490,61 @@ class MetricsStore:
 
         return incidents_out
 
+    def uptime(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict | None:
+        """単一サービスの SLA 観点の集約値を返す。レコードが 1 件も無ければ None。
+
+        `service_detail()` の `uptime_pct`（observation 件数ベース）に加えて、
+        `incidents()` から得られるインシデント時間ベースの SLA 指標を 1 オブジェクトで返す。
+
+        各値:
+            - total_checks / healthy_checks / uptime_pct: チェック件数ベース
+            - incident_count: 非 healthy の連続区間の数
+            - ongoing_incident: ウィンドウ末端で incident が継続中か
+            - total_incident_seconds: 全 incident の duration の合計（小数点 2 桁）
+            - longest_incident_seconds: 最長 incident の duration
+            - mean_incident_seconds: incident 平均長（MTTR 相当, incident_count==0 なら 0.0）
+
+        ダッシュボードの SLA ウィジェット用に「件数ベースの uptime_pct と、
+        インシデント単位の MTTR」を 1 リクエストで一括取得する用途を想定する。
+        個別 incident のリストが必要な場合は `/incidents`、status_counts や percentile
+        が必要な場合は `/services/{name}` を併用する（intentional 分離）。
+        """
+        records_snapshot = self.filter(service=service, since=since, until=until)
+        if not records_snapshot:
+            return None
+
+        total = len(records_snapshot)
+        healthy = sum(1 for r in records_snapshot if r.status == "healthy")
+        incidents_list = self.incidents(service=service, since=since, until=until)
+        incident_count = len(incidents_list)
+        if incident_count == 0:
+            total_incident_seconds = 0.0
+            longest_incident_seconds = 0.0
+            mean_incident_seconds = 0.0
+            ongoing_incident = False
+        else:
+            durations = [float(inc["duration_seconds"]) for inc in incidents_list]
+            total_incident_seconds = sum(durations)
+            longest_incident_seconds = max(durations)
+            mean_incident_seconds = total_incident_seconds / incident_count
+            ongoing_incident = bool(incidents_list[-1]["ongoing"])
+        return {
+            "service": service,
+            "total_checks": total,
+            "healthy_checks": healthy,
+            "uptime_pct": round(healthy / total * 100, 2),
+            "incident_count": incident_count,
+            "ongoing_incident": ongoing_incident,
+            "total_incident_seconds": round(total_incident_seconds, 2),
+            "longest_incident_seconds": round(longest_incident_seconds, 2),
+            "mean_incident_seconds": round(mean_incident_seconds, 2),
+        }
+
     def latest_for_service(
         self,
         service: str,
@@ -1829,6 +1884,74 @@ def get_service_incidents(
         "order": order,
         "incidents": page,
     }
+
+
+@app.get("/metrics/services/{service_name}/uptime")
+def get_service_uptime(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ集計",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ集計",
+    ),
+):
+    """単一サービスの SLA 集約値を返す。
+
+    既存:
+        - `/metrics/services/{service_name}` は uptime_pct (件数ベース) のみ
+        - `/metrics/services/{service_name}/incidents` は incident のリスト
+    の 2 つを SRE ダッシュボードで結合する利用が増えたため、件数ベースの
+    uptime_pct とインシデント単位の SLA 指標 (incident_count / total_incident_seconds /
+    longest_incident_seconds / mean_incident_seconds / ongoing_incident) を 1 リクエストに
+    集約する。
+
+    レスポンス:
+        {
+          "service": <service_name>,
+          "total_checks": <int>,
+          "healthy_checks": <int>,
+          "uptime_pct": <float>,
+          "incident_count": <int>,
+          "ongoing_incident": <bool>,
+          "total_incident_seconds": <float>,
+          "longest_incident_seconds": <float>,
+          "mean_incident_seconds": <float>
+        }
+
+    対象サービスのレコードが範囲内に 1 件も無い場合は 404 を返す
+    （他の `/metrics/services/{name}/*` とセマンティクスを揃える）。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    detail = store.uptime(service=normalized, since=since, until=until)
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+    return detail
 
 
 if __name__ == "__main__":
