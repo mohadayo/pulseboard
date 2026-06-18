@@ -3070,3 +3070,153 @@ def test_metrics_store_incidents_unit():
     assert inc["statuses"] == ["degraded", "unhealthy"]
     assert inc["observation_count"] == 2
     assert inc["max_response_time_ms"] == 500.0
+
+
+# ---- /metrics/services/{service_name}/uptime ----
+
+
+def test_service_uptime_404_when_no_records():
+    resp = client.get("/metrics/services/missing/uptime")
+    assert resp.status_code == 404
+    assert "missing" in resp.json()["detail"]
+
+
+def test_service_uptime_all_healthy_returns_zero_incidents():
+    _post("web", "healthy", 12.0, 10.0)
+    _post("web", "healthy", 13.0, 20.0)
+    _post("web", "healthy", 14.0, 30.0)
+    resp = client.get("/metrics/services/web/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {
+        "service": "web",
+        "total_checks": 3,
+        "healthy_checks": 3,
+        "uptime_pct": 100.0,
+        "incident_count": 0,
+        "ongoing_incident": False,
+        "total_incident_seconds": 0.0,
+        "longest_incident_seconds": 0.0,
+        "mean_incident_seconds": 0.0,
+    }
+
+
+def test_service_uptime_single_resolved_incident():
+    # healthy -> unhealthy -> degraded -> healthy のシーケンスは
+    # 1 incident (started_at=2.0, ended_at=3.0, duration=1.0) に畳まれる。
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 200.0, 2.0)
+    _post("web", "degraded", 500.0, 3.0)
+    _post("web", "healthy", 10.0, 4.0)
+    resp = client.get("/metrics/services/web/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["total_checks"] == 4
+    assert data["healthy_checks"] == 2
+    assert data["uptime_pct"] == 50.0
+    assert data["incident_count"] == 1
+    assert data["ongoing_incident"] is False
+    assert data["total_incident_seconds"] == 1.0
+    assert data["longest_incident_seconds"] == 1.0
+    assert data["mean_incident_seconds"] == 1.0
+
+
+def test_service_uptime_multiple_incidents_mean_and_longest():
+    # 2 件の incident:
+    #   1) t=2..3 (duration=1.0, healthy at t=10 で resolve)
+    #   2) t=20..25 (duration=5.0, healthy at t=30 で resolve)
+    # mean=3.0, longest=5.0, total=6.0
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 200.0, 2.0)
+    _post("web", "unhealthy", 200.0, 3.0)
+    _post("web", "healthy", 10.0, 10.0)
+    _post("web", "degraded", 200.0, 20.0)
+    _post("web", "unhealthy", 300.0, 25.0)
+    _post("web", "healthy", 10.0, 30.0)
+    resp = client.get("/metrics/services/web/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["incident_count"] == 2
+    assert data["ongoing_incident"] is False
+    assert data["longest_incident_seconds"] == 5.0
+    assert data["total_incident_seconds"] == 6.0
+    assert data["mean_incident_seconds"] == 3.0
+
+
+def test_service_uptime_ongoing_when_window_ends_in_non_healthy():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 200.0, 2.0)
+    _post("web", "unhealthy", 200.0, 5.0)
+    resp = client.get("/metrics/services/web/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["incident_count"] == 1
+    assert data["ongoing_incident"] is True
+    assert data["longest_incident_seconds"] == 3.0
+
+
+def test_service_uptime_respects_since_until():
+    # since/until で範囲外を除外したときに件数とインシデントが整合する。
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 200.0, 50.0)
+    _post("web", "healthy", 10.0, 51.0)
+    _post("web", "unhealthy", 200.0, 200.0)
+    resp = client.get("/metrics/services/web/uptime?since=40&until=60")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_checks"] == 2
+    assert data["healthy_checks"] == 1
+    assert data["incident_count"] == 1
+
+
+def test_service_uptime_rejects_since_greater_than_until():
+    _post("web", "healthy", 10.0, 1.0)
+    resp = client.get("/metrics/services/web/uptime?since=100&until=50")
+    assert resp.status_code == 400
+
+
+def test_service_uptime_rejects_blank_service_name():
+    resp = client.get("/metrics/services/%20/uptime")
+    assert resp.status_code == 400
+
+
+def test_service_uptime_rejects_too_long_service_name():
+    long_name = "a" * 300
+    resp = client.get(f"/metrics/services/{long_name}/uptime")
+    assert resp.status_code == 400
+
+
+def test_service_uptime_ignores_other_services():
+    _post("api", "unhealthy", 500.0, 10.0)
+    _post("web", "healthy", 10.0, 11.0)
+    _post("web", "healthy", 10.0, 12.0)
+    resp = client.get("/metrics/services/web/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["incident_count"] == 0
+    assert data["uptime_pct"] == 100.0
+
+
+def test_metrics_store_uptime_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=1.0))
+    s.add(MetricRecord(service="web", status="unhealthy", response_time_ms=200.0, timestamp=2.0))
+    s.add(MetricRecord(service="web", status="degraded", response_time_ms=500.0, timestamp=4.0))
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=5.0))
+    result = s.uptime("web")
+    assert result is not None
+    assert result["total_checks"] == 4
+    assert result["healthy_checks"] == 2
+    assert result["uptime_pct"] == 50.0
+    assert result["incident_count"] == 1
+    assert result["ongoing_incident"] is False
+    assert result["total_incident_seconds"] == 2.0
+    assert result["longest_incident_seconds"] == 2.0
+    assert result["mean_incident_seconds"] == 2.0
+
+
+def test_metrics_store_uptime_none_when_no_records():
+    s = MetricsStore()
+    s.add(MetricRecord(service="api", status="healthy", response_time_ms=10.0, timestamp=1.0))
+    assert s.uptime("missing") is None
