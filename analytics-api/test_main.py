@@ -3220,3 +3220,189 @@ def test_metrics_store_uptime_none_when_no_records():
     s = MetricsStore()
     s.add(MetricRecord(service="api", status="healthy", response_time_ms=10.0, timestamp=1.0))
     assert s.uptime("missing") is None
+
+
+# ----------------------------------------------------------------------
+# GET /metrics/incidents (cross-service)
+# ----------------------------------------------------------------------
+
+
+def test_all_incidents_empty_store_returns_empty_list():
+    resp = client.get("/metrics/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["count"] == 0
+    assert data["limit"] >= 1
+    assert data["offset"] == 0
+    assert data["order"] == "asc"
+    assert data["incidents"] == []
+
+
+def test_all_incidents_aggregates_across_services_sorted_asc():
+    # web: incident at t=2
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    # db: incident at t=4
+    _post("db", "healthy", 20.0, 1.0)
+    _post("db", "degraded", 800.0, 4.0)
+    _post("db", "healthy", 22.0, 5.0)
+    resp = client.get("/metrics/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["count"] == 2
+    services = [inc["service"] for inc in data["incidents"]]
+    starts = [inc["started_at"] for inc in data["incidents"]]
+    # asc order by started_at: web (t=2) first, then db (t=4)
+    assert starts == [2.0, 4.0]
+    assert services == ["web", "db"]
+
+
+def test_all_incidents_tiebreak_by_service_name():
+    # 同じ started_at の場合は service 名の辞書順でタイブレーク（昇順）。
+    _post("alpha", "unhealthy", 100.0, 5.0)
+    _post("alpha", "healthy", 10.0, 6.0)
+    _post("zeta", "unhealthy", 100.0, 5.0)
+    _post("zeta", "healthy", 10.0, 6.0)
+    resp = client.get("/metrics/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    services = [inc["service"] for inc in data["incidents"]]
+    assert services == ["alpha", "zeta"]
+
+
+def test_all_incidents_filters_by_service():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("db", "degraded", 800.0, 4.0)
+    _post("db", "healthy", 22.0, 5.0)
+    resp = client.get("/metrics/incidents?service=web")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["incidents"][0]["service"] == "web"
+    assert data["incidents"][0]["started_at"] == 2.0
+
+
+def test_all_incidents_filters_by_q_substring_case_insensitive():
+    _post("web-api", "unhealthy", 100.0, 2.0)
+    _post("web-api", "healthy", 11.0, 3.0)
+    _post("db-primary", "degraded", 800.0, 4.0)
+    _post("db-primary", "healthy", 22.0, 5.0)
+    resp = client.get("/metrics/incidents?q=WEB")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["incidents"][0]["service"] == "web-api"
+
+
+def test_all_incidents_filters_by_time_range():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("db", "degraded", 800.0, 10.0)
+    _post("db", "healthy", 22.0, 11.0)
+    resp = client.get("/metrics/incidents?since=5")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["incidents"][0]["service"] == "db"
+
+
+def test_all_incidents_ongoing_only_filter():
+    # web: closed incident (healthy follows)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    # db: ongoing incident (window ends in non-healthy)
+    _post("db", "degraded", 800.0, 4.0)
+    _post("db", "unhealthy", 900.0, 5.0)
+    resp = client.get("/metrics/incidents?ongoing_only=true")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    inc = data["incidents"][0]
+    assert inc["service"] == "db"
+    assert inc["ongoing"] is True
+
+
+def test_all_incidents_order_desc_reverses_list():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("db", "degraded", 800.0, 4.0)
+    _post("db", "healthy", 22.0, 5.0)
+    resp = client.get("/metrics/incidents?order=desc")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["order"] == "desc"
+    starts = [inc["started_at"] for inc in data["incidents"]]
+    assert starts == [4.0, 2.0]
+
+
+def test_all_incidents_pagination_limit_and_offset():
+    # 3 つのインシデントを作る
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("db", "degraded", 800.0, 4.0)
+    _post("db", "healthy", 22.0, 5.0)
+    _post("cache", "unhealthy", 50.0, 6.0)
+    _post("cache", "healthy", 5.0, 7.0)
+    resp = client.get("/metrics/incidents?limit=1&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["count"] == 1
+    assert data["limit"] == 1
+    assert data["offset"] == 1
+    # asc 順で 2 件目 → db (t=4)
+    assert data["incidents"][0]["service"] == "db"
+
+
+def test_all_incidents_rejects_invalid_range():
+    resp = client.get("/metrics/incidents?since=10&until=5")
+    assert resp.status_code == 400
+
+
+def test_all_incidents_rejects_blank_service():
+    resp = client.get("/metrics/incidents?service=%20%20")
+    assert resp.status_code == 400
+
+
+def test_all_incidents_rejects_blank_q():
+    resp = client.get("/metrics/incidents?q=%20%20")
+    assert resp.status_code == 400
+
+
+def test_all_incidents_rejects_zero_limit():
+    resp = client.get("/metrics/incidents?limit=0")
+    assert resp.status_code == 422
+
+
+def test_all_incidents_no_incidents_when_all_healthy():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "healthy", 11.0, 2.0)
+    _post("db", "healthy", 20.0, 1.0)
+    resp = client.get("/metrics/incidents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["incidents"] == []
+
+
+def test_metrics_store_all_incidents_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="unhealthy", response_time_ms=100.0, timestamp=2.0))
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=3.0))
+    s.add(MetricRecord(service="db", status="degraded", response_time_ms=500.0, timestamp=4.0))
+    result = s.all_incidents()
+    assert len(result) == 2
+    # asc by started_at
+    assert result[0]["service"] == "web"
+    assert result[0]["started_at"] == 2.0
+    assert result[1]["service"] == "db"
+    assert result[1]["started_at"] == 4.0
+    # service フィールドが先頭で付与されている
+    assert "service" in result[0]
+    assert "started_at" in result[0]
+    assert "duration_seconds" in result[0]
