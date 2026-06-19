@@ -490,6 +490,41 @@ class MetricsStore:
 
         return incidents_out
 
+    def all_incidents(
+        self,
+        service: str | None = None,
+        q: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict]:
+        """フィルタ条件に一致する全サービスのインシデントを横断的に返す。
+
+        `incidents()` が単一サービスの非 healthy 連続区間を抽出するのに対し、
+        本メソッドは複数サービスを横断して各インシデントに `service` フィールドを
+        付与した辞書を返す。SRE ダッシュボードの「現在発生中・直近のインシデント」
+        全体ビュー（特定サービスを跨いだ俯瞰）の単一リクエスト化を想定。
+
+        フィルタの意味:
+            - service: 指定された場合は単一サービスのみ対象（per-service と等価）
+            - q: フィルタ後の service 名に対する部分一致（大文字小文字無視）
+            - since/until: 観測の Unix timestamp ウィンドウ
+
+        並び順は呼び出し側で決める前提でここでは `started_at` 昇順を返す
+        （同一 `started_at` の場合は `service` 名の辞書順をタイブレーカに使う）。
+        """
+        if service is not None:
+            services = [service]
+        else:
+            services = self.distinct_services(since=since, until=until, q=q)
+        out: list[dict] = []
+        for svc in services:
+            for inc in self.incidents(service=svc, since=since, until=until):
+                # `service` 列を先頭に置いて他のフィールドはそのまま残す。
+                enriched = {"service": svc, **inc}
+                out.append(enriched)
+        out.sort(key=lambda d: (d["started_at"], d["service"]))
+        return out
+
     def uptime(
         self,
         service: str,
@@ -1877,6 +1912,125 @@ def get_service_incidents(
     page = incidents_list[offset:offset + limit]
     return {
         "service": normalized,
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "order": order,
+        "incidents": page,
+    }
+
+
+@app.get("/metrics/incidents")
+def get_all_incidents(
+    service: str | None = Query(
+        default=None,
+        description="単一サービスのみに絞り込む場合に指定（per-service 版と等価）",
+    ),
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する部分一致フィルタ（大文字小文字無視）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ対象",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ対象",
+    ),
+    ongoing_only: bool = Query(
+        default=False,
+        description="True ならウィンドウ末端で継続中（ongoing）のインシデントのみを返す",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="ソート順（started_at の昇順 / 降順）",
+    ),
+):
+    """全サービス横断のインシデント一覧。
+
+    `/metrics/services/{service_name}/incidents` は単一サービス単位だが、
+    SRE ダッシュボードの「今どこかで障害が起きているか」を見たい場面では
+    クライアント側で `/metrics/services/names` → 各サービス毎の
+    `/metrics/services/{name}/incidents` を fan-out する必要があった。
+    本エンドポイントはサーバ側で全サービスを横断集計し、各インシデントに
+    `service` 列を付けて返す。
+
+    レスポンス:
+        {
+          "count":  <ページ内件数>,
+          "total":  <フィルタ後のインシデント総数>,
+          "limit":  <limit>,
+          "offset": <offset>,
+          "order":  <"asc" or "desc">,
+          "incidents": [
+            {"service", "started_at", "ended_at", "duration_seconds", "ongoing",
+             "statuses", "observation_count", "max_response_time_ms"},
+            ...
+          ]
+        }
+
+    `service` クエリを指定した場合は単一サービスのみ対象（`/metrics/services/
+    {service_name}/incidents` と同等の絞り込み）。`q` は service 名への部分一致
+    フィルタ（`/metrics/overview` 等と同じセマンティクス）。`ongoing_only=true`
+    の場合はウィンドウ末端まで非 healthy が続いている現在進行中のインシデント
+    だけを返す。
+
+    並びは `started_at` 昇順をベースに、同 timestamp は `service` 名でタイブレーク。
+    `order=desc` を指定するとリストを反転して返す。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized_service: str | None = None
+    if service is not None:
+        normalized_service = service.strip()
+        if not normalized_service:
+            raise HTTPException(status_code=400, detail="service must not be blank")
+        if len(normalized_service) > MAX_SERVICE_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"service must be at most {MAX_SERVICE_LENGTH} characters",
+            )
+
+    normalized_q, q_error = _normalize_q_param(q)
+    if q_error is not None:
+        raise HTTPException(status_code=400, detail=q_error)
+
+    incidents_list = store.all_incidents(
+        service=normalized_service,
+        q=normalized_q,
+        since=since,
+        until=until,
+    )
+    if ongoing_only:
+        incidents_list = [inc for inc in incidents_list if inc.get("ongoing")]
+    if order == "desc":
+        incidents_list.reverse()
+    total = len(incidents_list)
+    page = incidents_list[offset:offset + limit]
+    return {
         "count": len(page),
         "total": total,
         "limit": limit,
