@@ -580,6 +580,38 @@ class MetricsStore:
             "mean_incident_seconds": round(mean_incident_seconds, 2),
         }
 
+    def all_uptime(
+        self,
+        q: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict]:
+        """全サービス横断の SLA 集約値リストを返す。
+
+        `uptime()` が単一サービスを返すのに対し、本メソッドは `distinct_services()` で
+        フィルタ通過後の service 名一覧を取り、各サービスに対し `uptime()` を呼んで
+        結果を集約する。`uptime()` が None を返すサービス（範囲内にレコードが無い）は
+        結果に含めない。
+
+        SRE ダッシュボードの「サービス一覧 + 各サービスの uptime / MTTR / 進行中
+        インシデント」全体ビューの単一リクエスト化を想定（`/metrics/incidents` の
+        SLA 集約版に相当する）。
+
+        並び順:
+            uptime_pct 昇順をベースに、同 uptime_pct はサービス名昇順をタイブレーカ
+            (= 悪い uptime を先頭に持ってくる方が SRE ダッシュボードでは有用)。
+            呼び出し側で必要なら反転する。
+        """
+        services = self.distinct_services(since=since, until=until, q=q)
+        out: list[dict] = []
+        for svc in services:
+            detail = self.uptime(service=svc, since=since, until=until)
+            if detail is None:
+                continue
+            out.append(detail)
+        out.sort(key=lambda d: (d["uptime_pct"], d["service"]))
+        return out
+
     def latest_for_service(
         self,
         service: str,
@@ -2106,6 +2138,102 @@ def get_service_uptime(
             detail=f"No metrics found for service '{normalized}'",
         )
     return detail
+
+
+@app.get("/metrics/uptime")
+def get_all_uptime(
+    q: str | None = Query(
+        default=None,
+        description="service 名に対する部分一致フィルタ（大文字小文字無視）",
+    ),
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ集計",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ集計",
+    ),
+    ongoing_only: bool = Query(
+        default=False,
+        description="True ならウィンドウ末端で進行中インシデントを持つサービスのみ返す",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+    order: SortOrderLiteral = Query(
+        default="asc",
+        description="ソート順（uptime_pct 昇順 = asc は worst-first、降順 = desc は best-first）",
+    ),
+):
+    """全サービス横断の SLA 集約一覧。
+
+    `/metrics/services/{service_name}/uptime` は単一サービス単位だが、
+    SRE ダッシュボードの「全サービスの uptime / MTTR / 進行中インシデント」
+    ビューでは `/metrics/services/names` → 各サービス毎の `/uptime` の fan-out が
+    必要だった。本エンドポイントはサーバ側で全サービスを横断集計し、各サービスの
+    SLA 集約値を 1 リクエストで返す（`/metrics/incidents` の SLA 集約版）。
+
+    レスポンス:
+        {
+          "count":  <ページ内件数>,
+          "total":  <フィルタ後のサービス数>,
+          "limit":  <limit>,
+          "offset": <offset>,
+          "order":  <"asc" or "desc">,
+          "services": [
+            {"service", "total_checks", "healthy_checks", "uptime_pct",
+             "incident_count", "ongoing_incident", "total_incident_seconds",
+             "longest_incident_seconds", "mean_incident_seconds"},
+            ...
+          ]
+        }
+
+    並びは uptime_pct 昇順をベースに、同 uptime_pct は service 名でタイブレーク。
+    `asc`（既定）は worst-uptime 先頭、`desc` は best-uptime 先頭。
+    `ongoing_only=true` でフィルタすると `ongoing_incident=true` のサービスだけを返す。
+    範囲内にレコードが 1 件も無いサービスは結果に含めない（`/uptime` の per-service
+    版が 404 を返すケースに相当）。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized_q, q_error = _normalize_q_param(q)
+    if q_error is not None:
+        raise HTTPException(status_code=400, detail=q_error)
+
+    services_list = store.all_uptime(q=normalized_q, since=since, until=until)
+    if ongoing_only:
+        services_list = [s for s in services_list if s.get("ongoing_incident")]
+    if order == "desc":
+        services_list = list(reversed(services_list))
+    total = len(services_list)
+    page = services_list[offset:offset + limit]
+    return {
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "order": order,
+        "services": page,
+    }
 
 
 if __name__ == "__main__":
