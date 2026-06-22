@@ -3406,3 +3406,183 @@ def test_metrics_store_all_incidents_unit():
     assert "service" in result[0]
     assert "started_at" in result[0]
     assert "duration_seconds" in result[0]
+
+
+# ----------------------------------------------------------------------
+# GET /metrics/uptime (cross-service SLA)
+# ----------------------------------------------------------------------
+
+
+def test_all_uptime_empty_store_returns_empty_list():
+    resp = client.get("/metrics/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["count"] == 0
+    assert data["limit"] >= 1
+    assert data["offset"] == 0
+    assert data["order"] == "asc"
+    assert data["services"] == []
+
+
+def test_all_uptime_aggregates_each_service_with_full_fields():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "healthy", 11.0, 2.0)
+    _post("db", "healthy", 20.0, 1.0)
+    _post("db", "unhealthy", 800.0, 2.0)
+    _post("db", "healthy", 22.0, 3.0)
+    resp = client.get("/metrics/uptime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    # asc by uptime_pct: db (66.67%) は web (100%) より低いので先頭
+    db_entry = next(s for s in data["services"] if s["service"] == "db")
+    web_entry = next(s for s in data["services"] if s["service"] == "web")
+    assert data["services"][0]["service"] == "db"
+    assert data["services"][1]["service"] == "web"
+    # 全フィールド存在チェック
+    for key in (
+        "service", "total_checks", "healthy_checks", "uptime_pct",
+        "incident_count", "ongoing_incident", "total_incident_seconds",
+        "longest_incident_seconds", "mean_incident_seconds",
+    ):
+        assert key in db_entry
+        assert key in web_entry
+    assert web_entry["uptime_pct"] == 100.0
+    assert web_entry["incident_count"] == 0
+    assert db_entry["incident_count"] == 1
+
+
+def test_all_uptime_sorted_uptime_pct_then_service_name():
+    # web と cache がともに 50% uptime → service 名昇順で cache が先
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("cache", "healthy", 5.0, 1.0)
+    _post("cache", "unhealthy", 50.0, 2.0)
+    # db は 100%
+    _post("db", "healthy", 20.0, 1.0)
+    resp = client.get("/metrics/uptime")
+    services = [s["service"] for s in resp.json()["services"]]
+    # 50% タイ → cache, web の順、その後 100% db
+    assert services == ["cache", "web", "db"]
+
+
+def test_all_uptime_filters_by_q_substring_case_insensitive():
+    _post("web-api", "healthy", 10.0, 1.0)
+    _post("web-api", "unhealthy", 100.0, 2.0)
+    _post("db-primary", "healthy", 20.0, 1.0)
+    resp = client.get("/metrics/uptime?q=WEB")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "web-api"
+
+
+def test_all_uptime_filters_by_time_range():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("db", "healthy", 20.0, 10.0)
+    _post("db", "unhealthy", 800.0, 11.0)
+    # since=5 → web は窓外、db のみ集計対象
+    resp = client.get("/metrics/uptime?since=5")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "db"
+
+
+def test_all_uptime_ongoing_only_filter():
+    # web は incident 終了済み
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    # db は incident 進行中（末尾が unhealthy）
+    _post("db", "degraded", 800.0, 4.0)
+    _post("db", "unhealthy", 900.0, 5.0)
+    resp = client.get("/metrics/uptime?ongoing_only=true")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["services"][0]["service"] == "db"
+    assert data["services"][0]["ongoing_incident"] is True
+
+
+def test_all_uptime_order_desc_reverses_list():
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "healthy", 11.0, 2.0)
+    _post("db", "healthy", 20.0, 1.0)
+    _post("db", "unhealthy", 800.0, 2.0)
+    _post("db", "healthy", 22.0, 3.0)
+    resp = client.get("/metrics/uptime?order=desc")
+    data = resp.json()
+    assert data["order"] == "desc"
+    # asc は db (低 uptime) → web、desc 反転で web → db
+    services = [s["service"] for s in data["services"]]
+    assert services == ["web", "db"]
+
+
+def test_all_uptime_pagination_limit_and_offset():
+    _post("alpha", "healthy", 10.0, 1.0)
+    _post("alpha", "unhealthy", 100.0, 2.0)
+    _post("alpha", "healthy", 11.0, 3.0)
+    _post("beta", "healthy", 20.0, 1.0)
+    _post("gamma", "healthy", 30.0, 1.0)
+    # uptime: alpha=66.67%, beta=100%, gamma=100%
+    # asc 順: alpha (66.67), beta (100, タイブレーカで先), gamma (100)
+    resp = client.get("/metrics/uptime?limit=1&offset=1")
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["count"] == 1
+    assert data["limit"] == 1
+    assert data["offset"] == 1
+    assert data["services"][0]["service"] == "beta"
+
+
+def test_all_uptime_excludes_services_with_no_records_in_window():
+    # web のレコードは since 範囲外、db は範囲内
+    _post("web", "healthy", 10.0, 1.0)
+    _post("db", "healthy", 20.0, 10.0)
+    resp = client.get("/metrics/uptime?since=5")
+    data = resp.json()
+    # web は集計対象外（範囲内 0 件）→ 結果に含まれない
+    services = [s["service"] for s in data["services"]]
+    assert services == ["db"]
+
+
+def test_all_uptime_rejects_invalid_range():
+    resp = client.get("/metrics/uptime?since=10&until=5")
+    assert resp.status_code == 400
+
+
+def test_all_uptime_rejects_blank_q():
+    resp = client.get("/metrics/uptime?q=%20%20")
+    assert resp.status_code == 400
+
+
+def test_all_uptime_rejects_zero_limit():
+    resp = client.get("/metrics/uptime?limit=0")
+    assert resp.status_code == 422
+
+
+def test_all_uptime_no_records_when_no_services_match_q():
+    _post("web", "healthy", 10.0, 1.0)
+    resp = client.get("/metrics/uptime?q=nonexistent")
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["services"] == []
+
+
+def test_metrics_store_all_uptime_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=1.0))
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=11.0, timestamp=2.0))
+    s.add(MetricRecord(service="db", status="healthy", response_time_ms=20.0, timestamp=1.0))
+    s.add(MetricRecord(service="db", status="unhealthy", response_time_ms=800.0, timestamp=2.0))
+    result = s.all_uptime()
+    assert len(result) == 2
+    # asc uptime_pct: db (50%) < web (100%)
+    assert result[0]["service"] == "db"
+    assert result[1]["service"] == "web"
+    assert result[1]["uptime_pct"] == 100.0
+    # uptime() と同じフィールドが揃っている
+    assert set(result[0].keys()) == {
+        "service", "total_checks", "healthy_checks", "uptime_pct",
+        "incident_count", "ongoing_incident", "total_incident_seconds",
+        "longest_incident_seconds", "mean_incident_seconds",
+    }
