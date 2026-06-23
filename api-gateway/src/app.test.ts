@@ -914,4 +914,42 @@ describe("API Gateway", () => {
       spy.mockRestore();
     });
   });
+
+  describe("Malformed JSON body", () => {
+    it("returns 400 with JSON error on invalid JSON to POST /api/metrics", async () => {
+      const spy = jest.spyOn(axios, "post");
+      const res = await request(app)
+        .post("/api/metrics")
+        .set("Content-Type", "application/json")
+        .send("{not-valid-json");
+      expect(res.status).toBe(400);
+      expect(res.headers["content-type"]).toMatch(/application\/json/);
+      expect(res.body.error).toBe("invalid JSON body");
+      // 上流 analytics-api には転送されない
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it("returns 400 with JSON error on invalid JSON to POST /api/metrics/batch", async () => {
+      const spy = jest.spyOn(axios, "post");
+      const res = await request(app)
+        .post("/api/metrics/batch")
+        .set("Content-Type", "application/json")
+        .send('{"metrics":[');
+      expect(res.status).toBe(400);
+      expect(res.headers["content-type"]).toMatch(/application\/json/);
+      expect(res.body.error).toBe("invalid JSON body");
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it("returns 400 with JSON error on completely empty body with JSON content-type", async () => {
+      const res = await request(app)
+        .post("/api/metrics")
+        .set("Content-Type", "application/json")
+        .send("not json at all");
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("invalid JSON body");
+    });
+  });
 });

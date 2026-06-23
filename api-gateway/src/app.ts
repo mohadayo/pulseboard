@@ -298,10 +298,15 @@ app.use((_req: Request, res: Response) => {
 // express.json の limit 超過は SyntaxError ではなく entity.too.large になる。
 // 既定の Express エラーハンドラに任せると HTML を返してしまうため、
 // JSON で 413 を返す専用ハンドラを 500 ハンドラの前段に置く。
+// 同様に、構文不正な JSON ボディは body-parser が SyntaxError
+// (`type === 'entity.parse.failed'`) を投げる。これを 500 ハンドラまで
+// 落とすと "Internal server error" として 5xx を返してしまい、
+// SRE の 5xx アラートが誤発火し原因（クライアント側の不正リクエスト）も
+// 分からない。413 と並列で 400 ハンドラを用意し、JSON で明示的に返す。
 app.use(
   (
     err: Error & { type?: string; status?: number; statusCode?: number },
-    _req: Request,
+    req: Request,
     res: Response,
     next: NextFunction,
   ) => {
@@ -309,6 +314,11 @@ app.use(
     if (err && (err.type === "entity.too.large" || status === 413)) {
       logger.warn("Request body too large", { limit: MAX_REQUEST_BODY });
       res.status(413).json({ error: "request body too large" });
+      return;
+    }
+    if (err instanceof SyntaxError && err.type === "entity.parse.failed") {
+      logger.warn("Malformed JSON body", { path: req.path });
+      res.status(400).json({ error: "invalid JSON body" });
       return;
     }
     next(err);
