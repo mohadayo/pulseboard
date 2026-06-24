@@ -134,13 +134,21 @@ func envMillis(key string, fallback time.Duration) time.Duration {
 }
 
 // shouldRetryStatus は HTTP ステータスコードがリトライに値するかを返す。
-// 5xx は一時的障害として再試行し、429 (Too Many Requests) も対象。
-// それ以外の 4xx はクライアント不備なので即時失敗とする。
+// 5xx は一時的障害として再試行し、429 (Too Many Requests) と 408 (Request
+// Timeout) も対象。それ以外の 4xx はクライアント不備なので即時失敗とする。
+//
+// 408 は RFC 7231 §6.5.7 で「サーバが受信完了できなかった。クライアントは
+// 修正せずに再試行できる」と定義された遷移性エラーであり、analytics-api が
+// 高負荷・ネットワーク揺らぎで返した場合に報告をドロップせず再送するために
+// retry 対象に含めている。
 func shouldRetryStatus(code int) bool {
 	if code >= 500 && code < 600 {
 		return true
 	}
 	if code == http.StatusTooManyRequests {
+		return true
+	}
+	if code == http.StatusRequestTimeout {
 		return true
 	}
 	return false
