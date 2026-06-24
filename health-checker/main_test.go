@@ -500,6 +500,31 @@ func TestReportMetric_RetriesOn429(t *testing.T) {
 	}
 }
 
+// TestReportMetric_RetriesOn408 は 408 Request Timeout もリトライ対象である
+// ことを確認する。RFC 7231 §6.5.7 で「クライアントは修正せず再試行できる」と
+// 規定された遷移性エラー。analytics-api が高負荷・ネットワーク揺らぎで返した
+// 場合に報告がドロップされない保証になる。
+func TestReportMetric_RetriesOn408(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n < 2 {
+			w.WriteHeader(http.StatusRequestTimeout)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	result := CheckResult{Service: "timeout", Status: "healthy", ResponseTimeMs: 10, Timestamp: 1}
+	if err := reportMetricWithPolicy(server.Client(), server.URL, result, testRetryPolicy); err != nil {
+		t.Fatalf("expected success after retry on 408, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("expected 2 calls, got %d", got)
+	}
+}
+
 // TestReportMetric_DoesNotRetryOn4xx は 400 番台（429 除く）が即時失敗となり、
 // 不要なリトライをしないことを確認する。
 func TestReportMetric_DoesNotRetryOn4xx(t *testing.T) {
@@ -598,6 +623,9 @@ func TestShouldRetryStatus(t *testing.T) {
 		{503, true},
 		{599, true},
 		{429, true},
+		// 408 Request Timeout は RFC 7231 §6.5.7 で「修正せず再試行できる」と
+		// 規定された遷移性エラーなので、429 / 5xx と同じく retry 対象。
+		{408, true},
 		{400, false},
 		{401, false},
 		{404, false},
