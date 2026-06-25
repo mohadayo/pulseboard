@@ -11,6 +11,11 @@ const logger = createLogger({
 const ANALYTICS_URL = process.env.ANALYTICS_URL || "http://localhost:8001";
 const CHECKER_URL = process.env.CHECKER_URL || "http://localhost:8002";
 const PROXY_TIMEOUT = parseInt(process.env.PROXY_TIMEOUT || "5000", 10);
+// /api/status から各サービスの /health を叩く際のタイムアウト。
+// 旧実装は 3000 をハードコードしており、ネットワーク事情に応じた調整ができなかった。
+// PROXY_TIMEOUT より短めの既定にすることで、集約 API が遅延しても
+// /api/status は素早く応答できる。
+const STATUS_PROBE_TIMEOUT = parseInt(process.env.STATUS_PROBE_TIMEOUT || "3000", 10);
 
 // JSON ペイロードの最大サイズ。明示しないと express.json の既定 100kb で動くため、
 // 環境変数で上書きできる形で明示する。analytics-api の /metrics/batch
@@ -20,8 +25,21 @@ const MAX_REQUEST_BODY = process.env.MAX_REQUEST_BODY || "256kb";
 const app = express();
 app.use(express.json({ limit: MAX_REQUEST_BODY }));
 
-app.use((req: Request, _res: Response, next: NextFunction) => {
-  logger.info(`${req.method} ${req.path}`, { ip: req.ip });
+// アクセスログ。リクエスト着信時ではなく、応答完了 (res 'finish') の時点で
+// HTTP ステータスと処理時間 (ms) を含めて 1 行に集約する。旧実装は
+// メソッドとパスだけを着信時に出していたため、レスポンスコードや遅延が
+// ログから読み取れず観測性が低かった。process.hrtime.bigint() を使うことで
+// Date.now() の 1ms 粒度より細かい計測を行う。
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const start = process.hrtime.bigint();
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+    logger.info(`${req.method} ${req.path}`, {
+      ip: req.ip,
+      status: res.statusCode,
+      duration_ms: Math.round(durationMs * 1000) / 1000,
+    });
+  });
   next();
 });
 
@@ -279,7 +297,7 @@ app.get("/api/status", async (_req: Request, res: Response) => {
   const statuses = await Promise.all(
     services.map(async (svc) => {
       try {
-        const resp = await axios.get(svc.url, { timeout: 3000 });
+        const resp = await axios.get(svc.url, { timeout: STATUS_PROBE_TIMEOUT });
         return { service: svc.name, status: resp.data.status || "healthy" };
       } catch {
         return { service: svc.name, status: "unhealthy" };
@@ -330,4 +348,4 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-export { app, ANALYTICS_URL, CHECKER_URL, MAX_REQUEST_BODY };
+export { app, ANALYTICS_URL, CHECKER_URL, MAX_REQUEST_BODY, STATUS_PROBE_TIMEOUT };
