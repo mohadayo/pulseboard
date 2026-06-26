@@ -3053,6 +3053,88 @@ def test_service_incidents_rejects_limit_zero():
     assert resp.status_code == 422
 
 
+def test_service_incidents_min_duration_filters_short_blips():
+    # blip 1: t=2..2 (duration 0), blip 2: t=4..5 (duration 1), incident: t=7..10 (duration 3)
+    _post("web", "healthy", 10.0, 1.0)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("web", "degraded", 200.0, 4.0)
+    _post("web", "unhealthy", 250.0, 5.0)
+    _post("web", "healthy", 12.0, 6.0)
+    _post("web", "unhealthy", 300.0, 7.0)
+    _post("web", "unhealthy", 310.0, 8.0)
+    _post("web", "unhealthy", 320.0, 10.0)
+    _post("web", "healthy", 13.0, 11.0)
+    resp = client.get("/metrics/services/web/incidents?min_duration_seconds=2")
+    assert resp.status_code == 200
+    data = resp.json()
+    # >=2s なのは 3 番目のインシデント (duration 3) のみ
+    assert data["total"] == 1
+    assert data["count"] == 1
+    assert data["incidents"][0]["started_at"] == 7.0
+    assert data["incidents"][0]["duration_seconds"] == 3.0
+
+
+def test_service_incidents_min_duration_zero_is_no_filter():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 11.0, 3.0)
+    _post("web", "degraded", 200.0, 4.0)
+    _post("web", "healthy", 12.0, 5.0)
+    # min_duration_seconds=0 は既存挙動（全件返却）
+    resp = client.get("/metrics/services/web/incidents?min_duration_seconds=0")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+
+
+def test_service_incidents_min_duration_equal_to_duration_is_included():
+    # duration が min_duration_seconds と完全一致するインシデントは含まれる（>=）
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "unhealthy", 110.0, 5.0)
+    _post("web", "healthy", 12.0, 6.0)
+    resp = client.get("/metrics/services/web/incidents?min_duration_seconds=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+
+
+def test_service_incidents_min_duration_filters_all_when_too_large():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "unhealthy", 110.0, 3.0)
+    _post("web", "healthy", 12.0, 4.0)
+    resp = client.get("/metrics/services/web/incidents?min_duration_seconds=1000")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["incidents"] == []
+
+
+def test_service_incidents_rejects_negative_min_duration():
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 12.0, 3.0)
+    resp = client.get("/metrics/services/web/incidents?min_duration_seconds=-1")
+    assert resp.status_code == 422
+
+
+def test_service_incidents_min_duration_combines_with_pagination():
+    # 3 件のインシデント、duration_seconds = [0, 5, 1]
+    _post("web", "unhealthy", 100.0, 1.0)  # blip (0s)
+    _post("web", "healthy", 10.0, 2.0)
+    _post("web", "unhealthy", 200.0, 10.0)  # long (5s)
+    _post("web", "unhealthy", 210.0, 15.0)
+    _post("web", "healthy", 10.0, 16.0)
+    _post("web", "unhealthy", 300.0, 20.0)  # short (1s)
+    _post("web", "unhealthy", 310.0, 21.0)
+    _post("web", "healthy", 10.0, 22.0)
+    # min_duration_seconds=1 → 後 2 件 (duration 5, 1) のみ、limit=1 offset=1 で 2 件目
+    resp = client.get("/metrics/services/web/incidents?min_duration_seconds=1&limit=1&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert data["count"] == 1
+    assert data["incidents"][0]["started_at"] == 20.0
+
+
 def test_metrics_store_incidents_unit():
     s = MetricsStore()
     s.add(MetricRecord(service="web", status="healthy", response_time_ms=10.0, timestamp=1.0))
@@ -3388,6 +3470,52 @@ def test_all_incidents_no_incidents_when_all_healthy():
     data = resp.json()
     assert data["total"] == 0
     assert data["incidents"] == []
+
+
+def test_all_incidents_min_duration_filters_short_blips():
+    # web: blip t=2..2 (0s), incident t=5..8 (3s)
+    _post("web", "unhealthy", 100.0, 2.0)
+    _post("web", "healthy", 10.0, 3.0)
+    _post("web", "unhealthy", 110.0, 5.0)
+    _post("web", "unhealthy", 120.0, 8.0)
+    _post("web", "healthy", 10.0, 9.0)
+    # db: incident t=10..15 (5s)
+    _post("db", "degraded", 500.0, 10.0)
+    _post("db", "degraded", 510.0, 15.0)
+    _post("db", "healthy", 20.0, 16.0)
+    resp = client.get("/metrics/incidents?min_duration_seconds=2")
+    assert resp.status_code == 200
+    data = resp.json()
+    # blip (0s) は除外、3s と 5s の 2 件のみ
+    assert data["total"] == 2
+    durations = sorted(inc["duration_seconds"] for inc in data["incidents"])
+    assert durations == [3.0, 5.0]
+
+
+def test_all_incidents_min_duration_combines_with_ongoing_only():
+    # web: 完了した長い incident (5s) + db: ongoing 短い incident (1s)
+    _post("web", "unhealthy", 100.0, 1.0)
+    _post("web", "unhealthy", 110.0, 6.0)
+    _post("web", "healthy", 10.0, 7.0)
+    _post("db", "degraded", 500.0, 10.0)
+    _post("db", "degraded", 510.0, 11.0)
+    # ongoing_only=true かつ min_duration_seconds=3 → 両条件マッチなし
+    resp = client.get("/metrics/incidents?ongoing_only=true&min_duration_seconds=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    # ongoing_only=true かつ min_duration_seconds=0 → db の ongoing 1 件
+    resp = client.get("/metrics/incidents?ongoing_only=true&min_duration_seconds=0")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["incidents"][0]["service"] == "db"
+    assert data["incidents"][0]["ongoing"] is True
+
+
+def test_all_incidents_rejects_negative_min_duration():
+    resp = client.get("/metrics/incidents?min_duration_seconds=-0.5")
+    assert resp.status_code == 422
 
 
 def test_metrics_store_all_incidents_unit():

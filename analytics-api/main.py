@@ -1880,6 +1880,14 @@ def get_service_incidents(
         default="asc",
         description="ソート順（started_at の昇順 / 降順）",
     ),
+    min_duration_seconds: float = Query(
+        default=0.0,
+        ge=0,
+        description=(
+            "`duration_seconds` がこの値未満のインシデントを除外する（既定 0 = 除外なし）。"
+            "ヘルスチェック起因の瞬間的な flap を間引く用途を想定。"
+        ),
+    ),
 ):
     """単一サービスの「`healthy` 以外が連続した期間」をインシデントとして時系列順に返す。
 
@@ -1937,7 +1945,18 @@ def get_service_incidents(
             detail=f"No metrics found for service '{normalized}'",
         )
 
+    if not math.isfinite(min_duration_seconds):
+        raise HTTPException(
+            status_code=400,
+            detail="min_duration_seconds must be a finite number",
+        )
+
     incidents_list = store.incidents(service=normalized, since=since, until=until)
+    if min_duration_seconds > 0:
+        incidents_list = [
+            inc for inc in incidents_list
+            if float(inc.get("duration_seconds", 0.0)) >= min_duration_seconds
+        ]
     if order == "desc":
         incidents_list.reverse()
     total = len(incidents_list)
@@ -1991,6 +2010,14 @@ def get_all_incidents(
     order: SortOrderLiteral = Query(
         default="asc",
         description="ソート順（started_at の昇順 / 降順）",
+    ),
+    min_duration_seconds: float = Query(
+        default=0.0,
+        ge=0,
+        description=(
+            "`duration_seconds` がこの値未満のインシデントを除外する（既定 0 = 除外なし）。"
+            "`ongoing_only` と AND 条件で組み合わせ可能。"
+        ),
     ),
 ):
     """全サービス横断のインシデント一覧。
@@ -2050,6 +2077,12 @@ def get_all_incidents(
     if q_error is not None:
         raise HTTPException(status_code=400, detail=q_error)
 
+    if not math.isfinite(min_duration_seconds):
+        raise HTTPException(
+            status_code=400,
+            detail="min_duration_seconds must be a finite number",
+        )
+
     incidents_list = store.all_incidents(
         service=normalized_service,
         q=normalized_q,
@@ -2058,6 +2091,11 @@ def get_all_incidents(
     )
     if ongoing_only:
         incidents_list = [inc for inc in incidents_list if inc.get("ongoing")]
+    if min_duration_seconds > 0:
+        incidents_list = [
+            inc for inc in incidents_list
+            if float(inc.get("duration_seconds", 0.0)) >= min_duration_seconds
+        ]
     if order == "desc":
         incidents_list.reverse()
     total = len(incidents_list)
