@@ -133,6 +133,21 @@ func envMillis(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+// newCheckHTTPClient はサービス /health のチェック・analytics-api への
+// メトリクス送信に使う共通 HTTP クライアントを生成する。
+//
+// タイムアウトは CHECK_HTTP_TIMEOUT_SECONDS 環境変数で上書き可能。
+// 既定 5 秒。0 / 不正値の場合は envSeconds の挙動で既定値にフォールバック。
+//
+// 旧実装では makeCheckHandler と main の 2 箇所で
+// `&http.Client{Timeout: 5 * time.Second}` がハードコードされており、
+// 片方だけ変更されると drift する状態だった。本関数で 1 箇所に集約する。
+func newCheckHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: envSeconds("CHECK_HTTP_TIMEOUT_SECONDS", 5*time.Second),
+	}
+}
+
 // shouldRetryStatus は HTTP ステータスコードがリトライに値するかを返す。
 // 5xx は一時的障害として再試行し、429 (Too Many Requests) と 408 (Request
 // Timeout) も対象。それ以外の 4xx はクライアント不備なので即時失敗とする。
@@ -274,7 +289,7 @@ func makeCheckHandler(targets []ServiceTarget, analyticsURL string) http.Handler
 		if !methodAllowed(w, r, http.MethodGet, http.MethodPost) {
 			return
 		}
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := newCheckHTTPClient()
 
 		results, reported := checkAndReportTargets(client, targets, analyticsURL)
 
@@ -355,7 +370,7 @@ func main() {
 	}()
 
 	if checkInterval > 0 {
-		periodicClient := &http.Client{Timeout: 5 * time.Second}
+		periodicClient := newCheckHTTPClient()
 		go runPeriodicChecks(ctx, periodicClient, targets, analyticsURL, checkInterval)
 	}
 

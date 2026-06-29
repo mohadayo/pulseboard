@@ -447,6 +447,7 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `METRIC_REPORT_MAX_ATTEMPTS` | `3` | Health Checker: analytics-api への POST `/metrics` 最大試行回数（`1` でリトライ無効） |
 | `METRIC_REPORT_BACKOFF_MS` | `100` | Health Checker: メトリクス報告の指数バックオフ初期値（ミリ秒） |
 | `CHECK_INTERVAL_SECONDS` | `0` | Health Checker: バックグラウンド定期チェックの間隔（秒、`0` で無効） |
+| `CHECK_HTTP_TIMEOUT_SECONDS` | `5` | Health Checker: 各サービス `/health` チェックおよび analytics-api への POST に使う HTTP クライアントのタイムアウト（秒）。高遅延ネットワーク環境では大きめに設定する。`0` や不正値の場合は既定値にフォールバック |
 
 ## Testing
 
@@ -474,8 +475,8 @@ pulseboard/
 ├── api-gateway/              # TypeScript API Gateway
 │   ├── src/
 │   │   ├── app.ts
-│   │   ├��─ app.test.ts
-���   │   └── index.ts
+│   │   ├── app.test.ts
+│   │   └── index.ts
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── jest.config.js
@@ -486,8 +487,8 @@ pulseboard/
 │   ├── test_main.py
 │   ├── requirements.txt
 │   └── Dockerfile
-├���─ health-checker/           # Go Health Checker
-│   ├���─ main.go
+├── health-checker/           # Go Health Checker
+│   ├── main.go
 │   ├── main_test.go
 │   ├── go.mod
 │   └── Dockerfile

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -756,5 +757,59 @@ func TestRunPeriodicChecks_ImmediateCancelReturns(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("runPeriodicChecks did not exit promptly when ctx already canceled")
+	}
+}
+
+// TestNewCheckHTTPClient_DefaultTimeout は CHECK_HTTP_TIMEOUT_SECONDS 未設定時に
+// 既定値の 5 秒が使われることを検証する。
+// 旧実装で 2 箇所にハードコードされていた値の置換であり、互換性のため既定は変えない。
+func TestNewCheckHTTPClient_DefaultTimeout(t *testing.T) {
+	t.Setenv("CHECK_HTTP_TIMEOUT_SECONDS", "") // 念のため未設定状態を明示
+
+	client := newCheckHTTPClient()
+
+	if client == nil {
+		t.Fatal("newCheckHTTPClient returned nil")
+	}
+	if got, want := client.Timeout, 5*time.Second; got != want {
+		t.Errorf("default Timeout = %v, want %v", got, want)
+	}
+}
+
+// TestNewCheckHTTPClient_RespectsEnvOverride は CHECK_HTTP_TIMEOUT_SECONDS で
+// 任意の秒数に上書きできることを検証する。
+// 高遅延環境（CI / 海外リージョン）で 5 秒を超える応答を許容するための導線。
+func TestNewCheckHTTPClient_RespectsEnvOverride(t *testing.T) {
+	t.Setenv("CHECK_HTTP_TIMEOUT_SECONDS", "10")
+
+	client := newCheckHTTPClient()
+
+	if got, want := client.Timeout, 10*time.Second; got != want {
+		t.Errorf("Timeout = %v, want %v", got, want)
+	}
+}
+
+// TestNewCheckHTTPClient_InvalidValueFallsBackToDefault は不正値・0・負値を
+// 設定しても既定 5 秒にフォールバックすることを検証する。
+// envSeconds の既存挙動（n > 0 のみ採用）に依存するため、ここでは複数の
+// 「不正な」入力を表で網羅する。
+func TestNewCheckHTTPClient_InvalidValueFallsBackToDefault(t *testing.T) {
+	cases := []string{
+		"",
+		"0",
+		"-1",
+		"abc",
+		"3.5", // strconv.Atoi では小数を弾く
+	}
+	for _, raw := range cases {
+		t.Run(fmt.Sprintf("value=%q", raw), func(t *testing.T) {
+			t.Setenv("CHECK_HTTP_TIMEOUT_SECONDS", raw)
+
+			client := newCheckHTTPClient()
+
+			if got, want := client.Timeout, 5*time.Second; got != want {
+				t.Errorf("Timeout = %v, want %v (fallback)", got, want)
+			}
+		})
 	}
 }
