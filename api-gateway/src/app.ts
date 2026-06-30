@@ -1,5 +1,5 @@
 import express, { Request, Response, NextFunction } from "express";
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError, AxiosRequestConfig } from "axios";
 import { createLogger, format, transports } from "winston";
 
 const logger = createLogger({
@@ -125,6 +125,29 @@ async function proxyAnalyticsDelete(
   }
 }
 
+// analytics-api への POST プロキシ共通処理。
+// `req.body` をそのまま上流に転送し、応答ステータスを踏襲して返す。
+// エラー時は `respondUpstreamError` 経由で 4xx/5xx の伝播 / 502 への丸めを GET / DELETE と統一する。
+// `axiosOptions` で `timeout` 以外の追加オプションを指定可能（既定 timeout は上書きしない限り PROXY_TIMEOUT）。
+async function proxyAnalyticsPost(
+  req: Request,
+  res: Response,
+  upstreamPath: string,
+  label: string,
+  axiosOptions: AxiosRequestConfig = {},
+): Promise<void> {
+  try {
+    const resp = await axios.post(
+      `${ANALYTICS_URL}${upstreamPath}`,
+      req.body,
+      { timeout: PROXY_TIMEOUT, ...axiosOptions },
+    );
+    res.status(resp.status).json(resp.data);
+  } catch (err) {
+    respondUpstreamError(res, err, label);
+  }
+}
+
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "healthy", service: "api-gateway" });
 });
@@ -219,50 +242,13 @@ app.get(
     ),
 );
 
-app.post("/api/metrics", async (req: Request, res: Response) => {
-  try {
-    const resp = await axios.post(`${ANALYTICS_URL}/metrics`, req.body, { timeout: PROXY_TIMEOUT });
-    res.status(resp.status).json(resp.data);
-  } catch (err) {
-    if (err instanceof AxiosError && err.response) {
-      logger.warn("Analytics returned error on post", {
-        status: err.response.status,
-        data: err.response.data,
-      });
-      res.status(err.response.status).json(err.response.data);
-      return;
-    }
-    const message = err instanceof AxiosError ? err.message : "Unknown error";
-    logger.error("Failed to post metric", { error: message });
-    res.status(502).json({ error: "Analytics service unavailable", detail: message });
-  }
-});
+app.post("/api/metrics", (req: Request, res: Response) =>
+  proxyAnalyticsPost(req, res, "/metrics", "metric-post"),
+);
 
-app.post("/api/metrics/batch", async (req: Request, res: Response) => {
-  try {
-    const resp = await axios.post(
-      `${ANALYTICS_URL}/metrics/batch`,
-      req.body,
-      {
-        timeout: PROXY_TIMEOUT,
-        validateStatus: (status: number) => status >= 200 && status < 300,
-      }
-    );
-    res.status(resp.status).json(resp.data);
-  } catch (err) {
-    if (err instanceof AxiosError && err.response) {
-      logger.warn("Analytics returned error on batch", {
-        status: err.response.status,
-        data: err.response.data,
-      });
-      res.status(err.response.status).json(err.response.data);
-      return;
-    }
-    const message = err instanceof AxiosError ? err.message : "Unknown error";
-    logger.error("Failed to post metric batch", { error: message });
-    res.status(502).json({ error: "Analytics service unavailable", detail: message });
-  }
-});
+app.post("/api/metrics/batch", (req: Request, res: Response) =>
+  proxyAnalyticsPost(req, res, "/metrics/batch", "metric-batch"),
+);
 
 app.delete("/api/metrics", (req: Request, res: Response) =>
   proxyAnalyticsDelete(
