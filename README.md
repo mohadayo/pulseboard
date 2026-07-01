@@ -91,6 +91,7 @@ npm start
 | GET | `/api/metrics/services` | サービス一覧（`?q=` で部分一致検索、`?sort=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/api/metrics/services/names` | distinct な service 名一覧のみを返す軽量エンドポイント（フィルタドロップダウン populate 用、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/api/metrics/timeseries` | 時系列バケット集計（`?bucket_seconds=` でバケット幅を指定、既定 60 秒） |
+| GET | `/api/metrics/uptime` | 全サービス横断の SLA 集約（uptime_pct / MTTR / 進行中インシデント。`?q=` / `?since=` / `?until=` / `?ongoing_only=` / `?limit=` / `?offset=` / `?order=`） |
 | POST | `/api/metrics` | Record a metric (proxy to Analytics API) |
 | GET | `/api/check` | Run health checks on all targets (proxy to Checker) |
 | GET | `/api/status` | Aggregated health status of all internal services |
