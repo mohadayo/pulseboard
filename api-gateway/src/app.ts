@@ -214,6 +214,20 @@ app.get("/api/metrics/timeseries", (req: Request, res: Response) =>
   ),
 );
 
+// 全サービス横断の SLA 集約エンドポイントを analytics-api にプロキシする。
+// `/metrics/uptime` は各サービスの uptime_pct / MTTR / 進行中インシデントを
+// 単一リクエストで返す SRE ダッシュボード向けのビュー。
+// allowedParams は analytics-api 側 `get_all_uptime` のクエリと一致させる。
+app.get("/api/metrics/uptime", (req: Request, res: Response) =>
+  proxyAnalyticsGet(
+    req,
+    res,
+    "/metrics/uptime",
+    ["q", "since", "until", "ongoing_only", "limit", "offset", "order"],
+    "uptime",
+  ),
+);
+
 // distinct な service 名一覧のみを返す軽量エンドポイントを analytics-api にプロキシする。
 // `:name` パラメタ付きルート (`/api/metrics/services/:name`) より前に登録する必要がある
 // — Express は登録順にマッチするため、後ろに置くと `name = "names"` の単一サービス

@@ -882,6 +882,144 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("GET /api/metrics/uptime", () => {
+    it("returns 502 when analytics is down", async () => {
+      const res = await request(app).get("/api/metrics/uptime");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Analytics service unavailable");
+    });
+
+    it("forwards to /metrics/uptime without query string when no params", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          count: 0,
+          total: 0,
+          limit: 100,
+          offset: 0,
+          order: "asc",
+          services: [],
+        },
+      } as never);
+      const res = await request(app).get("/api/metrics/uptime");
+      expect(res.status).toBe(200);
+      expect(res.body.services).toEqual([]);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      // クエリ無しなので URL に "?" は付かないこと（buildUpstreamParams の挙動回帰）
+      expect(calledUrl).toBe(`${ANALYTICS_URL}/metrics/uptime`);
+      spy.mockRestore();
+    });
+
+    it("forwards q/since/until/ongoing_only/limit/offset/order to analytics", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          count: 1,
+          total: 1,
+          limit: 50,
+          offset: 0,
+          order: "desc",
+          services: [
+            {
+              service: "web",
+              total_checks: 10,
+              healthy_checks: 9,
+              uptime_pct: 90.0,
+              incident_count: 1,
+              ongoing_incident: true,
+              total_incident_seconds: 30.0,
+              longest_incident_seconds: 30.0,
+              mean_incident_seconds: 30.0,
+            },
+          ],
+        },
+      } as never);
+      const res = await request(app).get(
+        "/api/metrics/uptime?q=we&since=100&until=200&ongoing_only=true&limit=50&offset=0&order=desc",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.services[0].service).toBe("web");
+      expect(res.body.services[0].ongoing_incident).toBe(true);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/metrics/uptime");
+      expect(calledUrl).toContain("q=we");
+      expect(calledUrl).toContain("since=100");
+      expect(calledUrl).toContain("until=200");
+      expect(calledUrl).toContain("ongoing_only=true");
+      expect(calledUrl).toContain("limit=50");
+      expect(calledUrl).toContain("offset=0");
+      expect(calledUrl).toContain("order=desc");
+      spy.mockRestore();
+    });
+
+    it("drops empty-string query params before forwarding", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          count: 0, total: 0, limit: 100, offset: 0, order: "asc", services: [],
+        },
+      } as never);
+      const res = await request(app).get(
+        "/api/metrics/uptime?q=&since=&ongoing_only=",
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("q=");
+      expect(calledUrl).not.toContain("since=");
+      expect(calledUrl).not.toContain("ongoing_only=");
+      spy.mockRestore();
+    });
+
+    it("does NOT forward unrelated params (service / status / sort / bucket_seconds)", async () => {
+      // `/metrics/uptime` は service / status / sort / bucket_seconds を受け付けないため、
+      // クライアントが付与しても上流には渡さないこと。
+      // 特に `service` は「特定サービスに絞る」用途では `/metrics/services/{name}/uptime`
+      // を使うのが正で、`/metrics/uptime` の allowlist には含めない。
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          count: 0, total: 0, limit: 100, offset: 0, order: "asc", services: [],
+        },
+      } as never);
+      const res = await request(app).get(
+        "/api/metrics/uptime?service=web&status=healthy&sort=uptime_pct&bucket_seconds=60",
+      );
+      expect(res.status).toBe(200);
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("service=");
+      expect(calledUrl).not.toContain("status=");
+      expect(calledUrl).not.toContain("sort=");
+      expect(calledUrl).not.toContain("bucket_seconds=");
+      spy.mockRestore();
+    });
+
+    it("propagates 400 from analytics on invalid q", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        data: { detail: "q must not be blank" },
+      } as never;
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/uptime?q=%20");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("q must not be blank");
+      spy.mockRestore();
+    });
+
+    it("propagates 400 from analytics when since > until", async () => {
+      const err = new AxiosError("Bad Request");
+      err.response = {
+        status: 400,
+        data: { detail: "since must be less than or equal to until" },
+      } as never;
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/metrics/uptime?since=200&until=100");
+      expect(res.status).toBe(400);
+      expect(res.body.detail).toContain("since");
+      spy.mockRestore();
+    });
+  });
+
   describe("404 handler", () => {
     it("returns 404 for unknown routes", async () => {
       const res = await request(app).get("/unknown");
