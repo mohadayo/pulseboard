@@ -425,6 +425,22 @@ analytics-api の一時的な障害（接続エラー、5xx、429 Too Many Reque
 - 初期バックオフは `METRIC_REPORT_BACKOFF_MS`（既定 `100`）。`backoff × 2^(n-1)` で増加
 - 4xx（429 を除く）はリクエスト不備なので即時失敗とする
 
+**追加監視対象 (Extra targets):**
+
+デフォルトでは `analytics-api` と `api-gateway` のみを監視するが、
+`EXTRA_TARGETS` 環境変数に JSON 配列を渡すことで追加ターゲットを末尾に append できる。
+サイドカーやサードパーティ製サービス（Redis / メール送信 / 外部 API 等）を
+再ビルド無しで監視対象に加えるための拡張ポイント。
+
+```bash
+EXTRA_TARGETS='[{"name":"redis","url":"http://redis:6379/ping"},{"name":"mailer","url":"http://mailer:9000/healthz"}]'
+```
+
+- `name` / `url` の両方が非空のエントリのみ有効。片方でも空だと該当エントリはスキップされる
+- JSON パース失敗時は警告ログを出してデフォルトターゲットのみで起動（fail-open）
+  — オペレータの typo でコンテナが再起動ループに陥らないようにするための設計
+- 追加ターゲットにも同じ間隔・タイムアウト・リトライ設定が適用される
+
 ## Configuration
 
 All services are configured via environment variables. See [`.env.example`](.env.example) for the full list.
@@ -449,6 +465,7 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `METRIC_REPORT_BACKOFF_MS` | `100` | Health Checker: メトリクス報告の指数バックオフ初期値（ミリ秒） |
 | `CHECK_INTERVAL_SECONDS` | `0` | Health Checker: バックグラウンド定期チェックの間隔（秒、`0` で無効） |
 | `CHECK_HTTP_TIMEOUT_SECONDS` | `5` | Health Checker: 各サービス `/health` チェックおよび analytics-api への POST に使う HTTP クライアントのタイムアウト（秒）。高遅延ネットワーク環境では大きめに設定する。`0` や不正値の場合は既定値にフォールバック |
+| `EXTRA_TARGETS` | （未設定） | Health Checker: デフォルトターゲットに加えて監視する追加サービスの JSON 配列。例: `[{"name":"redis","url":"http://redis:6379/ping"}]`。パース失敗時は警告ログを出してデフォルトのみで起動する |
 
 ## Testing
 
