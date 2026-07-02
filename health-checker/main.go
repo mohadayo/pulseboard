@@ -241,13 +241,48 @@ func reportMetricWithPolicy(
 	return lastErr
 }
 
+// parseExtraTargets は EXTRA_TARGETS 環境変数の値をパースし、追加ターゲットを返す。
+//
+// 期待する形式は JSON 配列で、各要素は `{"name":"","url":""}`。空文字列・
+// パース失敗・型ミスマッチ・name/url いずれかが空のエントリは無視し、
+// プロセスは常にデフォルトターゲットのみで起動できるように fail-open にする
+// （運用時に誤った JSON を渡してもコンテナが再起動ループしない）。
+//
+// 復帰値の第 2 引数はパースに失敗した場合のエラー。呼び元は警告ログのみに使い、
+// 起動可否の判定には使わない（設定ミス通知の観点で有用だが致命傷ではない）。
+func parseExtraTargets(raw string) ([]ServiceTarget, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var entries []ServiceTarget
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, err
+	}
+	valid := make([]ServiceTarget, 0, len(entries))
+	for _, e := range entries {
+		if e.Name == "" || e.URL == "" {
+			continue
+		}
+		valid = append(valid, e)
+	}
+	return valid, nil
+}
+
 func NewTargets() []ServiceTarget {
 	analyticsURL := GetEnv("ANALYTICS_URL", "http://localhost:8001")
 	gatewayURL := GetEnv("GATEWAY_URL", "http://localhost:8000")
-	return []ServiceTarget{
+	targets := []ServiceTarget{
 		{Name: "analytics-api", URL: analyticsURL + "/health"},
 		{Name: "api-gateway", URL: gatewayURL + "/health"},
 	}
+	// EXTRA_TARGETS で追加ターゲットを末尾に append する。
+	// パース失敗時は警告ログのみ出してデフォルトターゲットで起動を続行する。
+	if extras, err := parseExtraTargets(os.Getenv("EXTRA_TARGETS")); err != nil {
+		log.Printf("[WARN] Ignoring EXTRA_TARGETS due to parse error: %v", err)
+	} else if len(extras) > 0 {
+		targets = append(targets, extras...)
+	}
+	return targets
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
