@@ -296,6 +296,34 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// makeTargetsHandler は起動時に構築した監視対象一覧を JSON で返すハンドラを生成する。
+//
+// 運用中に「ANALYTICS_URL / GATEWAY_URL / EXTRA_TARGETS が本当に反映されたか」を
+// コンテナに入らず curl 一発で確認できるようにする。EXTRA_TARGETS の JSON が壊れて
+// silent drop されていた等のミス設定を、実行中プロセス側で即座に検知できる。
+//
+// targets はプロセス起動時に main() で一度だけ構築され、以降は不変で読み取り
+// 専用なので、ハンドラ側でロックは不要。/health と同じく GET / HEAD のみ許可。
+func makeTargetsHandler(targets []ServiceTarget) http.HandlerFunc {
+	// nil に対して JSON エンコードすると "null" になり、"count":0,"targets":null
+	// になってしまう。クライアントはループ前に nil チェックが要らないよう、
+	// 起動時に必ず空スライスへ正規化してエンコードする。
+	safe := targets
+	if safe == nil {
+		safe = []ServiceTarget{}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !methodAllowed(w, r, http.MethodGet, http.MethodHead) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":   len(safe),
+			"targets": safe,
+		})
+	}
+}
+
 // checkAndReportTargets はターゲット群を並列にチェックし、結果を入力順で返す。
 // 各ターゲットの metrics 報告も並列に実行する。
 func checkAndReportTargets(client *http.Client, targets []ServiceTarget, analyticsURL string) ([]CheckResult, int) {
@@ -377,6 +405,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/targets", makeTargetsHandler(targets))
 	analyticsURL := GetEnv("ANALYTICS_URL", "http://localhost:8001")
 	mux.HandleFunc("/check", makeCheckHandler(targets, analyticsURL))
 
