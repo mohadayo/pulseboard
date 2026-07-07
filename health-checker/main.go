@@ -347,6 +347,68 @@ func checkAndReportTargets(client *http.Client, targets []ServiceTarget, analyti
 	return results, int(reported)
 }
 
+// RuntimeConfig は health-checker の実行時設定を表す。
+// 環境変数由来の値をプロセス起動時に一度だけ読み取り、以降は不変で参照する。
+// `/config` エンドポイントはこの構造体をそのまま JSON エンコードして返す。
+type RuntimeConfig struct {
+	AnalyticsURL            string       `json:"analytics_url"`
+	CheckIntervalSeconds    int          `json:"check_interval_seconds"`
+	CheckHTTPTimeoutSeconds int          `json:"check_http_timeout_seconds"`
+	MetricReportMaxAttempts int          `json:"metric_report_max_attempts"`
+	MetricReportBackoffMs   int          `json:"metric_report_backoff_ms"`
+	Server                  ServerConfig `json:"server"`
+	ShutdownTimeoutSeconds  int          `json:"shutdown_timeout_seconds"`
+}
+
+// ServerConfig は net/http.Server 側のタイムアウト設定をまとめる。
+// `/config` レスポンスで "server" ネストとして出す。
+type ServerConfig struct {
+	ReadHeaderTimeoutSeconds int `json:"read_header_timeout_seconds"`
+	ReadTimeoutSeconds       int `json:"read_timeout_seconds"`
+	WriteTimeoutSeconds      int `json:"write_timeout_seconds"`
+	IdleTimeoutSeconds       int `json:"idle_timeout_seconds"`
+}
+
+// loadRuntimeConfig は環境変数から実行時設定を構築する。
+// main() の env 読み取り箇所と同じデフォルト値・単位換算ロジックを使い、
+// `/config` の返り値と実際の挙動が drift しないようにする。
+func loadRuntimeConfig() RuntimeConfig {
+	policy := loadRetryPolicy()
+	return RuntimeConfig{
+		AnalyticsURL:            GetEnv("ANALYTICS_URL", "http://localhost:8001"),
+		CheckIntervalSeconds:    int(envSeconds("CHECK_INTERVAL_SECONDS", 0) / time.Second),
+		CheckHTTPTimeoutSeconds: int(envSeconds("CHECK_HTTP_TIMEOUT_SECONDS", 5*time.Second) / time.Second),
+		MetricReportMaxAttempts: policy.maxAttempts,
+		MetricReportBackoffMs:   int(policy.backoff / time.Millisecond),
+		Server: ServerConfig{
+			ReadHeaderTimeoutSeconds: int(envSeconds("CHECKER_READ_HEADER_TIMEOUT", 5*time.Second) / time.Second),
+			ReadTimeoutSeconds:       int(envSeconds("CHECKER_READ_TIMEOUT", 15*time.Second) / time.Second),
+			WriteTimeoutSeconds:      int(envSeconds("CHECKER_WRITE_TIMEOUT", 15*time.Second) / time.Second),
+			IdleTimeoutSeconds:       int(envSeconds("CHECKER_IDLE_TIMEOUT", 60*time.Second) / time.Second),
+		},
+		ShutdownTimeoutSeconds: int(envSeconds("SHUTDOWN_TIMEOUT_SECONDS", 30*time.Second) / time.Second),
+	}
+}
+
+// makeConfigHandler は実行時設定を JSON で返すハンドラを生成する。
+//
+// 運用中に「本当に env が反映されたか」を curl 一発で確認できるようにする。
+// 例えば `CHECK_INTERVAL_SECONDS=60` のつもりが `CHECK_INTERAVAL_SECONDS`
+// と typo していた場合、`/config` を叩けば `check_interval_seconds: 0`
+// と表示され即座に気付ける。
+//
+// config はプロセス起動時に一度だけ構築されて以降は不変なので、
+// ハンドラ側でロックは不要。/targets / /health と同じく GET / HEAD のみ許可。
+func makeConfigHandler(config RuntimeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !methodAllowed(w, r, http.MethodGet, http.MethodHead) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(config)
+	}
+}
+
 func makeCheckHandler(targets []ServiceTarget, analyticsURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !methodAllowed(w, r, http.MethodGet, http.MethodPost) {
@@ -406,6 +468,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/targets", makeTargetsHandler(targets))
+	mux.HandleFunc("/config", makeConfigHandler(loadRuntimeConfig()))
 	analyticsURL := GetEnv("ANALYTICS_URL", "http://localhost:8001")
 	mux.HandleFunc("/check", makeCheckHandler(targets, analyticsURL))
 

@@ -403,6 +403,32 @@ curl "http://localhost:8001/metrics/services/web/timeseries?bucket_seconds=300&s
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | GET | `/check` | Run health checks on all configured targets |
+| GET | `/config` | 実行中の設定値（間隔・タイムアウト・リトライ・analytics-api URL）を JSON で返す |
+
+**実行時設定の確認 (`GET /config`):**
+
+環境変数由来のパラメータがプロセスに正しく反映されているかをコンテナ外から確認できる。
+`CHECK_INTERVAL_SECONDS=60` のつもりが typo で `CHECK_INTERAVAL_SECONDS` になっていたケースなど、
+JSON レスポンス側の該当キー（例: `check_interval_seconds`）を見れば即座に気付ける。
+値はプロセス起動時に一度だけ環境変数から構築され、以降は不変。
+
+レスポンス例:
+```json
+{
+  "analytics_url": "http://analytics-api:8001",
+  "check_interval_seconds": 30,
+  "check_http_timeout_seconds": 5,
+  "metric_report_max_attempts": 3,
+  "metric_report_backoff_ms": 100,
+  "server": {
+    "read_header_timeout_seconds": 5,
+    "read_timeout_seconds": 15,
+    "write_timeout_seconds": 15,
+    "idle_timeout_seconds": 60
+  },
+  "shutdown_timeout_seconds": 30
+}
+```
 
 **バックグラウンド定期チェック (Periodic checks):**
 
