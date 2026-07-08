@@ -2648,6 +2648,165 @@ def test_metrics_store_service_by_status_unit():
     assert s.service_by_status("missing") is None
 
 
+# ---- /metrics/services/{service_name}/by_hour_of_day ----
+#
+# UTC 時刻でビニングした周期集計。`/by_status` と対称的に、populated-only /
+# 404-on-empty / 数値バリデーション / service_name バリデーションを揃える。
+# タイムスタンプは 1970-01-01 UTC の 0:00 を基点に、`H` 時 M 分は
+# `H * 3600 + M * 60` 秒として計算する（テストを読みやすくするため）。
+
+
+def test_service_by_hour_of_day_basic_bucketing():
+    # 03:00 UTC (3*3600=10800) に 2 件、05:30 UTC (5*3600+1800=19800) に 1 件
+    _post_metric_with_timestamp("web", "healthy", 50.0, 10800.0)
+    _post_metric_with_timestamp("web", "healthy", 60.0, 10860.0)   # 03:01 UTC
+    _post_metric_with_timestamp("web", "degraded", 500.0, 19800.0)  # 05:30 UTC
+    _post_metric_with_timestamp("other", "healthy", 1.0, 10800.0)   # 他サービス
+    resp = client.get("/metrics/services/web/by_hour_of_day")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["service"] == "web"
+    assert data["total"] == 3
+    assert data["distinct_hours"] == 2
+    hours = [b["hour"] for b in data["by_hour_of_day"]]
+    # populated-only + lex 昇順 = 時間順
+    assert hours == ["03", "05"]
+    b03 = data["by_hour_of_day"][0]
+    b05 = data["by_hour_of_day"][1]
+    assert b03["count"] == 2
+    assert b03["by_status"]["healthy"] == 2
+    assert b03["by_status"]["degraded"] == 0
+    assert b03["avg_response_ms"] == 55.0
+    assert b03["min_response_ms"] == 50.0
+    assert b03["max_response_ms"] == 60.0
+    assert b03["first_seen"] == 10800.0
+    assert b03["last_seen"] == 10860.0
+    assert b05["count"] == 1
+    assert b05["by_status"]["degraded"] == 1
+    assert b05["by_status"]["healthy"] == 0
+    assert b05["first_seen"] == 19800.0
+    assert b05["last_seen"] == 19800.0
+
+
+def test_service_by_hour_of_day_populated_only():
+    # populated-only: 観測が無い時間帯は返さない (timeseries と同じ方針)
+    _post_metric_with_timestamp("web", "healthy", 10.0, 3600.0)   # 01 時
+    _post_metric_with_timestamp("web", "healthy", 10.0, 43200.0)  # 12 時
+    body = client.get("/metrics/services/web/by_hour_of_day").json()
+    hours = [b["hour"] for b in body["by_hour_of_day"]]
+    assert hours == ["01", "12"]
+    assert body["distinct_hours"] == 2
+
+
+def test_service_by_hour_of_day_bucket_by_status_has_all_keys():
+    # 各バケットの by_status は `ALLOWED_STATUSES` の全キーを 0 初期化で含む
+    _post_metric_with_timestamp("web", "healthy", 10.0, 3600.0)
+    body = client.get("/metrics/services/web/by_hour_of_day").json()
+    bucket = body["by_hour_of_day"][0]
+    assert set(bucket["by_status"].keys()) == {"healthy", "unhealthy", "degraded", "unknown"}
+    assert bucket["by_status"]["healthy"] == 1
+    assert bucket["by_status"]["unhealthy"] == 0
+    assert bucket["by_status"]["degraded"] == 0
+    assert bucket["by_status"]["unknown"] == 0
+
+
+def test_service_by_hour_of_day_404_when_no_records():
+    resp = client.get("/metrics/services/missing/by_hour_of_day")
+    assert resp.status_code == 404
+
+
+def test_service_by_hour_of_day_404_when_only_other_services():
+    _post_metric_with_timestamp("other", "healthy", 1.0, 3600.0)
+    resp = client.get("/metrics/services/web/by_hour_of_day")
+    assert resp.status_code == 404
+
+
+def test_service_by_hour_of_day_since_until_filter():
+    # 01 時 / 05 時 / 20 時 の 3 件。since/until で 05 時のみ残す。
+    _post_metric_with_timestamp("web", "healthy", 10.0, 3600.0)    # 01:00 UTC
+    _post_metric_with_timestamp("web", "degraded", 200.0, 18000.0)  # 05:00 UTC
+    _post_metric_with_timestamp("web", "healthy", 11.0, 72000.0)   # 20:00 UTC
+    body = client.get(
+        "/metrics/services/web/by_hour_of_day?since=10000&until=30000"
+    ).json()
+    assert body["total"] == 1
+    assert body["distinct_hours"] == 1
+    assert body["by_hour_of_day"][0]["hour"] == "05"
+    assert body["by_hour_of_day"][0]["by_status"]["degraded"] == 1
+
+
+def test_service_by_hour_of_day_404_when_filter_excludes_all():
+    _post_metric_with_timestamp("web", "healthy", 1.0, 3600.0)
+    resp = client.get("/metrics/services/web/by_hour_of_day?since=100000")
+    assert resp.status_code == 404
+
+
+def test_service_by_hour_of_day_rejects_since_greater_than_until():
+    _post_metric_with_timestamp("svc", "healthy", 1.0, 3600.0)
+    resp = client.get("/metrics/services/svc/by_hour_of_day?since=500&until=100")
+    assert resp.status_code == 400
+
+
+def test_service_by_hour_of_day_rejects_blank_path():
+    resp = client.get("/metrics/services/%20/by_hour_of_day")
+    assert resp.status_code == 400
+
+
+def test_service_by_hour_of_day_percentiles_single_value():
+    # 1 件のみのバケットでは p50=p95=p99=min=max=avg
+    _post_metric_with_timestamp("web", "healthy", 42.0, 3600.0)
+    body = client.get("/metrics/services/web/by_hour_of_day").json()
+    bucket = body["by_hour_of_day"][0]
+    assert bucket["count"] == 1
+    assert bucket["p50_response_ms"] == 42.0
+    assert bucket["p95_response_ms"] == 42.0
+    assert bucket["p99_response_ms"] == 42.0
+    assert bucket["avg_response_ms"] == 42.0
+    assert bucket["min_response_ms"] == 42.0
+    assert bucket["max_response_ms"] == 42.0
+
+
+def test_service_by_hour_of_day_boundary_hours():
+    # 00:00:01 UTC (= epoch 1、`timestamp > 0` の制約を満たす最小値) と
+    # 23:59:59 UTC (= 86399) が別バケット (`"00"` / `"23"`) へ落ちること。
+    # 「1 日の境界」で日跨ぎのバケット割り当てが崩れないかの回帰。
+    _post_metric_with_timestamp("web", "healthy", 10.0, 1.0)
+    _post_metric_with_timestamp("web", "healthy", 20.0, 86399.0)
+    body = client.get("/metrics/services/web/by_hour_of_day").json()
+    hours = [b["hour"] for b in body["by_hour_of_day"]]
+    assert hours == ["00", "23"]
+    assert body["distinct_hours"] == 2
+
+
+def test_metrics_store_service_by_hour_of_day_unit():
+    s = MetricsStore()
+    s.add(MetricRecord(service="web", status="healthy", response_time_ms=50.0, timestamp=3600.0))    # 01
+    s.add(MetricRecord(service="web", status="degraded", response_time_ms=500.0, timestamp=18000.0))  # 05
+    s.add(MetricRecord(service="other", status="healthy", response_time_ms=1.0, timestamp=3600.0))   # 他サービス
+    result = s.service_by_hour_of_day("web")
+    assert result is not None
+    assert result["total"] == 2
+    assert result["distinct_hours"] == 2
+    assert [b["hour"] for b in result["by_hour_of_day"]] == ["01", "05"]
+    assert result["by_hour_of_day"][0]["by_status"]["healthy"] == 1
+    assert result["by_hour_of_day"][1]["by_status"]["degraded"] == 1
+    assert s.service_by_hour_of_day("missing") is None
+
+
+def test_service_by_hour_of_day_same_hour_across_days_merges():
+    # 同じ「時」でも別日 (86400 秒差) の観測は同一バケットにマージされる。
+    # これは仕様: 「1 日のうちどの時間帯」の集計なので、日を跨いだ 03 時は同じバケット。
+    _post_metric_with_timestamp("web", "healthy", 10.0, 10800.0)          # day 0, 03 UTC
+    _post_metric_with_timestamp("web", "healthy", 20.0, 10800.0 + 86400)  # day 1, 03 UTC
+    body = client.get("/metrics/services/web/by_hour_of_day").json()
+    assert body["distinct_hours"] == 1
+    bucket = body["by_hour_of_day"][0]
+    assert bucket["hour"] == "03"
+    assert bucket["count"] == 2
+    assert bucket["first_seen"] == 10800.0
+    assert bucket["last_seen"] == 10800.0 + 86400
+
+
 # ---- /metrics/services/{service_name}/latest ----
 
 
