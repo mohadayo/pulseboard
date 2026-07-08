@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -409,6 +410,99 @@ class MetricsStore:
             "service": service,
             "total": len(records_snapshot),
             "by_status": by_status,
+        }
+
+    def service_by_hour_of_day(
+        self,
+        service: str,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> dict | None:
+        """単一サービスの観測を「1 日のうちの時刻 (00〜23, UTC)」でグルーピングして返す。
+
+        `service_by_status` がステータス軸で切るのに対し、こちらは時刻軸で切る。
+        「深夜バッチ時間帯だけ degraded が急増する」「業務時間帯は healthy が多い」
+        のような時刻依存の稼働パターンを、UI 側で全件取得→クライアントビニング
+        することなく 1 リクエストで可視化するためのエンドポイント。
+
+        バケットのキーは `timestamp` (Unix epoch 秒) を UTC 時刻へ変換した
+        2 桁ゼロ詰めの時 (`"00"`〜`"23"`)。populated-only（観測 0 件の時刻は返さない）
+        方針は `service_timeseries` と揃える。
+
+        各バケットの形:
+            {
+                "hour": <"00"..."23">,
+                "count": <件数>,
+                "by_status": {healthy, unhealthy, degraded, unknown},   # 全キー 0 初期化
+                "avg_response_ms": <平均>,
+                "min_response_ms": <最小>,
+                "max_response_ms": <最大>,
+                "p50_response_ms": <p50>,
+                "p95_response_ms": <p95>,
+                "p99_response_ms": <p99>,
+                "first_seen": <バケット内最古 observation の timestamp>,
+                "last_seen":  <バケット内最新 observation の timestamp>,
+            }
+
+        レスポンス全体:
+            {
+                "service": <service>,
+                "total": <since/until 範囲内の全 observation 件数>,
+                "distinct_hours": <populated バケット数>,
+                "by_hour_of_day": [...]   # "00" 昇順（lex 昇順 = 時刻順）
+            }
+
+        対象サービスのレコードが範囲内に 1 件も無い場合は `None` を返す
+        （`service_by_status` と同じ 404 セマンティクス）。
+        """
+        records_snapshot = self.filter(service=service, since=since, until=until)
+        if not records_snapshot:
+            return None
+
+        per_hour: dict[str, dict] = {}
+        for r in records_snapshot:
+            hour_key = datetime.fromtimestamp(r.timestamp, tz=timezone.utc).strftime("%H")
+            bucket = per_hour.setdefault(
+                hour_key,
+                {
+                    "times": [],
+                    "by_status": {s: 0 for s in ALLOWED_STATUSES},
+                    "first_seen": None,
+                    "last_seen": None,
+                },
+            )
+            bucket["times"].append(r.response_time_ms)
+            bucket["by_status"][r.status] = bucket["by_status"].get(r.status, 0) + 1
+            if bucket["first_seen"] is None or r.timestamp < bucket["first_seen"]:
+                bucket["first_seen"] = r.timestamp
+            if bucket["last_seen"] is None or r.timestamp > bucket["last_seen"]:
+                bucket["last_seen"] = r.timestamp
+
+        by_hour_of_day: list[dict] = []
+        for hour_key in sorted(per_hour.keys()):
+            bucket = per_hour[hour_key]
+            times = bucket["times"]
+            sorted_times = sorted(times)
+            count = len(sorted_times)
+            avg = sum(times) / count if count else 0.0
+            by_hour_of_day.append({
+                "hour": hour_key,
+                "count": count,
+                "by_status": bucket["by_status"],
+                "avg_response_ms": round(avg, 2),
+                "min_response_ms": round(sorted_times[0], 2) if sorted_times else 0.0,
+                "max_response_ms": round(sorted_times[-1], 2) if sorted_times else 0.0,
+                "p50_response_ms": round(_percentile(sorted_times, 50), 2),
+                "p95_response_ms": round(_percentile(sorted_times, 95), 2),
+                "p99_response_ms": round(_percentile(sorted_times, 99), 2),
+                "first_seen": bucket["first_seen"],
+                "last_seen": bucket["last_seen"],
+            })
+        return {
+            "service": service,
+            "total": len(records_snapshot),
+            "distinct_hours": len(by_hour_of_day),
+            "by_hour_of_day": by_hour_of_day,
         }
 
     def incidents(
@@ -1844,6 +1938,75 @@ def get_service_by_status(
         )
 
     detail = store.service_by_status(service=normalized, since=since, until=until)
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for service '{normalized}'",
+        )
+    return detail
+
+
+@app.get("/metrics/services/{service_name}/by_hour_of_day")
+def get_service_by_hour_of_day(
+    service_name: str,
+    since: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以降（>=）の観測のみ集計",
+    ),
+    until: float | None = Query(
+        default=None,
+        ge=0,
+        description="この Unix timestamp 以前（<=）の観測のみ集計",
+    ),
+):
+    """単一サービスの観測を「1 日のうちの時刻 (UTC 00〜23)」でグルーピングして返す。
+
+    「業務時間帯は healthy が多く、深夜バッチ時間帯だけ degraded が急増する」の
+    ような時刻依存の稼働パターンを、UI 側で全件取得→クライアントビニングする
+    ことなく 1 リクエストで可視化するためのエンドポイント。既存 `/by_status`
+    が status 軸で切るのに対し、こちらは時刻軸で切る対称的な集計。
+
+    バケットキーは `timestamp` を UTC 化した 2 桁ゼロ詰め時刻 (`"00"`〜`"23"`)。
+    lex 昇順 = 時間順が保たれるのでソートは単純。populated-only （観測 0 件の
+    時刻はレスポンスに含めない）方針は `service_timeseries` と揃える。
+
+    レスポンス:
+        {
+          "service": <service_name>,
+          "total": <since/until 範囲内の全 observation 件数>,
+          "distinct_hours": <populated バケット数>,
+          "by_hour_of_day": [
+            {"hour", "count", "by_status", "avg_response_ms", "min", "max",
+             "p50", "p95", "p99", "first_seen", "last_seen"},
+            ...   # "00" から昇順
+          ]
+        }
+
+    各バケットの `by_status` は `ALLOWED_STATUSES` の全キーを 0 初期化で必ず含む
+    （`service_timeseries` のバケットと同じ契約）。対象サービスのレコードが範囲内に
+    1 件も無い場合は 404 を返す（他の `/metrics/services/{name}/*` と揃える）。
+    """
+    if since is not None and until is not None and since > until:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    if since is not None and not math.isfinite(since):
+        raise HTTPException(status_code=400, detail="since must be a finite number")
+    if until is not None and not math.isfinite(until):
+        raise HTTPException(status_code=400, detail="until must be a finite number")
+
+    normalized = service_name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="service_name must not be blank")
+    if len(normalized) > MAX_SERVICE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"service_name must be at most {MAX_SERVICE_LENGTH} characters",
+        )
+
+    detail = store.service_by_hour_of_day(service=normalized, since=since, until=until)
     if detail is None:
         raise HTTPException(
             status_code=404,
