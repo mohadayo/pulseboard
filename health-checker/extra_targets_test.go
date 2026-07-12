@@ -141,3 +141,90 @@ func TestNewTargets_EmptyExtraTargetsReturnsDefaults(t *testing.T) {
 		t.Fatalf("len(targets) = %d, want %d: %+v", got, want, targets)
 	}
 }
+
+// EXTRA_TARGETS がデフォルトターゲット (analytics-api / api-gateway) と
+// 同じ name を持つ場合、`checkAndReportTargets` が 1 サイクルで同名メトリクスを
+// 2 件送ってしまう二重計上を防ぐため、extras 側を捨てる。
+// URL 面ではデフォルト（ANALYTICS_URL / GATEWAY_URL 由来）が正なので
+// 先勝ちで残す。
+func TestNewTargets_DropsExtraTargetsCollidingWithDefaults(t *testing.T) {
+	t.Setenv("ANALYTICS_URL", "http://analytics")
+	t.Setenv("GATEWAY_URL", "http://gateway")
+	t.Setenv("EXTRA_TARGETS", `[
+        {"name":"analytics-api","url":"http://old-analytics/health"},
+        {"name":"api-gateway","url":"http://old-gateway/health"},
+        {"name":"mailer","url":"http://mailer/healthz"}
+    ]`)
+
+	targets := NewTargets()
+
+	if got, want := len(targets), 3; got != want {
+		t.Fatalf("len(targets) = %d, want %d: %+v", got, want, targets)
+	}
+	if targets[0].Name != "analytics-api" || targets[0].URL != "http://analytics/health" {
+		t.Errorf("targets[0] = %+v, want default {analytics-api http://analytics/health}", targets[0])
+	}
+	if targets[1].Name != "api-gateway" || targets[1].URL != "http://gateway/health" {
+		t.Errorf("targets[1] = %+v, want default {api-gateway http://gateway/health}", targets[1])
+	}
+	if targets[2].Name != "mailer" || targets[2].URL != "http://mailer/healthz" {
+		t.Errorf("targets[2] = %+v, want {mailer http://mailer/healthz}", targets[2])
+	}
+}
+
+// EXTRA_TARGETS 自体の内部で同じ name が複数回登場した場合、
+// 最初の 1 件のみ採用し、以降の同名エントリはスキップする。
+// v1 と v2 が交互に上書きされて分析側でメトリクスが揺らぐ状態を防ぐ。
+func TestNewTargets_DropsSelfDuplicatesWithinExtraTargets(t *testing.T) {
+	t.Setenv("ANALYTICS_URL", "http://analytics")
+	t.Setenv("GATEWAY_URL", "http://gateway")
+	t.Setenv("EXTRA_TARGETS", `[
+        {"name":"payments","url":"http://payments-v1/health"},
+        {"name":"payments","url":"http://payments-v2/health"},
+        {"name":"search","url":"http://search/health"}
+    ]`)
+
+	targets := NewTargets()
+
+	if got, want := len(targets), 4; got != want {
+		t.Fatalf("len(targets) = %d, want %d: %+v", got, want, targets)
+	}
+	if targets[2].Name != "payments" || targets[2].URL != "http://payments-v1/health" {
+		t.Errorf("targets[2] = %+v, want first-wins {payments http://payments-v1/health}", targets[2])
+	}
+	if targets[3].Name != "search" || targets[3].URL != "http://search/health" {
+		t.Errorf("targets[3] = %+v, want {search http://search/health}", targets[3])
+	}
+}
+
+// mergeExtraTargets のユニットテスト（NewTargets 経由の統合テストと独立に、
+// 単体関数レベルで first-wins と defaults 優先の挙動を保証する）。
+func TestMergeExtraTargets(t *testing.T) {
+	defaults := []ServiceTarget{
+		{Name: "a", URL: "http://a-default"},
+		{Name: "b", URL: "http://b-default"},
+	}
+	extras := []ServiceTarget{
+		{Name: "a", URL: "http://a-extra"}, // 既定と衝突 → drop
+		{Name: "c", URL: "http://c-extra"}, // 新規 → 採用
+		{Name: "c", URL: "http://c-dup"},   // 自己重複 → drop
+		{Name: "d", URL: "http://d-extra"}, // 新規 → 採用
+	}
+
+	got := mergeExtraTargets(defaults, extras)
+
+	want := []ServiceTarget{
+		{Name: "a", URL: "http://a-default"},
+		{Name: "b", URL: "http://b-default"},
+		{Name: "c", URL: "http://c-extra"},
+		{Name: "d", URL: "http://d-extra"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
