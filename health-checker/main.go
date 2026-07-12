@@ -280,9 +280,44 @@ func NewTargets() []ServiceTarget {
 	if extras, err := parseExtraTargets(os.Getenv("EXTRA_TARGETS")); err != nil {
 		log.Printf("[WARN] Ignoring EXTRA_TARGETS due to parse error: %v", err)
 	} else if len(extras) > 0 {
-		targets = append(targets, extras...)
+		targets = mergeExtraTargets(targets, extras)
 	}
 	return targets
+}
+
+// mergeExtraTargets はデフォルトターゲットと EXTRA_TARGETS 由来の追加ターゲットを合成する。
+//
+// name の重複は「先勝ち」でスキップする：
+//  1. デフォルトの `analytics-api` / `api-gateway` と衝突する extra は捨てる
+//     （旧実装だと両方 append されて `checkAndReportTargets` が 1 サイクルで同名メトリクス
+//     を 2 件 analytics-api に送り、ダッシュボードの total_checks / uptime_pct が二重計上
+//     でズレていた）
+//  2. EXTRA_TARGETS 自体の内部での自己重複（同一 name が複数回登場）は最初の 1 件のみ採用
+//
+// スキップ時は `[WARN]` ログを出して silent drop を避け、`/targets` エンドポイントを
+// 叩かなくても運用時ログから気付けるようにする。fail-open 方針は維持し、
+// スキップは起動失敗にはしない。
+//
+// テスト容易性のためにパッケージレベル関数として切り出し、`NewTargets` から呼び出す。
+func mergeExtraTargets(defaults, extras []ServiceTarget) []ServiceTarget {
+	seen := make(map[string]struct{}, len(defaults)+len(extras))
+	for _, t := range defaults {
+		seen[t.Name] = struct{}{}
+	}
+	merged := make([]ServiceTarget, 0, len(defaults)+len(extras))
+	merged = append(merged, defaults...)
+	for _, e := range extras {
+		if _, dup := seen[e.Name]; dup {
+			log.Printf(
+				"[WARN] Ignoring EXTRA_TARGETS entry %q (%s): name already registered",
+				e.Name, e.URL,
+			)
+			continue
+		}
+		seen[e.Name] = struct{}{}
+		merged = append(merged, e)
+	}
+	return merged
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
