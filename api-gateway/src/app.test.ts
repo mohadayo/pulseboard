@@ -1,6 +1,6 @@
 import request from "supertest";
 import axios, { AxiosError } from "axios";
-import { app, ANALYTICS_URL } from "./app";
+import { app, ANALYTICS_URL, CHECKER_URL, STATUS_PROBE_TIMEOUT } from "./app";
 
 describe("API Gateway", () => {
   describe("GET /health", () => {
@@ -713,6 +713,66 @@ describe("API Gateway", () => {
       expect(res.status).toBe(502);
       expect(res.body.error).toBe("Health checker unavailable");
     });
+
+    it("forwards checker response body on 200", async () => {
+      const spy = jest.spyOn(axios, "get").mockResolvedValueOnce({
+        status: 200,
+        data: {
+          results: [
+            { service: "web", status: "healthy", latency_ms: 12 },
+            { service: "worker", status: "unhealthy", latency_ms: null },
+          ],
+        },
+      } as never);
+      const res = await request(app).get("/api/check");
+      expect(res.status).toBe(200);
+      expect(res.body.results).toHaveLength(2);
+      expect(res.body.results[0].service).toBe("web");
+      expect(res.body.results[1].status).toBe("unhealthy");
+      // 上流は CHECKER_URL の /check を叩く
+      const calledUrl = spy.mock.calls[0][0] as string;
+      expect(calledUrl).toBe(`${CHECKER_URL}/check`);
+      spy.mockRestore();
+    });
+
+    it("passes PROXY_TIMEOUT (default 5000ms) to axios", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { results: [] } } as never);
+      const res = await request(app).get("/api/check");
+      expect(res.status).toBe(200);
+      const config = spy.mock.calls[0][1] as { timeout?: number };
+      expect(config.timeout).toBe(5000);
+      spy.mockRestore();
+    });
+
+    it("returns 502 with error detail when checker is unreachable", async () => {
+      const err = new AxiosError("connect ECONNREFUSED 127.0.0.1:8002");
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/check");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Health checker unavailable");
+      expect(res.body.detail).toContain("ECONNREFUSED");
+      spy.mockRestore();
+    });
+
+    it("returns 502 even when checker responds with 5xx (no propagation)", async () => {
+      // /api/check は respondUpstreamError を経由せず、あらゆる例外を 502 に丸める。
+      // このテストは「4xx / 5xx が透過的に伝播しない」既存契約を回帰検知するためのもの。
+      const err = new AxiosError("Internal Server Error");
+      err.response = {
+        status: 500,
+        statusText: "Internal Server Error",
+        headers: {},
+        config: {} as never,
+        data: { detail: "checker exploded" },
+      };
+      const spy = jest.spyOn(axios, "get").mockRejectedValueOnce(err);
+      const res = await request(app).get("/api/check");
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe("Health checker unavailable");
+      spy.mockRestore();
+    });
   });
 
   describe("GET /api/status", () => {
@@ -724,6 +784,134 @@ describe("API Gateway", () => {
         (s: { service: string }) => s.service === "api-gateway"
       );
       expect(gateway.status).toBe("healthy");
+    });
+
+    it("returns healthy for both upstreams when they respond 200", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never)
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never);
+      const res = await request(app).get("/api/status");
+      expect(res.status).toBe(200);
+      expect(res.body.services).toHaveLength(3);
+      const analytics = res.body.services.find(
+        (s: { service: string }) => s.service === "analytics-api"
+      );
+      const checker = res.body.services.find(
+        (s: { service: string }) => s.service === "health-checker"
+      );
+      const gateway = res.body.services.find(
+        (s: { service: string }) => s.service === "api-gateway"
+      );
+      expect(analytics.status).toBe("healthy");
+      expect(checker.status).toBe("healthy");
+      expect(gateway.status).toBe("healthy");
+      spy.mockRestore();
+    });
+
+    it("forwards non-default status verbatim from upstream (e.g. 'degraded')", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { status: "degraded" } } as never)
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never);
+      const res = await request(app).get("/api/status");
+      expect(res.status).toBe(200);
+      const analytics = res.body.services.find(
+        (s: { service: string }) => s.service === "analytics-api"
+      );
+      expect(analytics.status).toBe("degraded");
+      spy.mockRestore();
+    });
+
+    it("defaults to 'healthy' when upstream 200 body has no status field", async () => {
+      // 上流の /health が 200 を返しても JSON に status を含まない古い実装の互換確認。
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: {} } as never)
+        .mockResolvedValueOnce({ status: 200, data: {} } as never);
+      const res = await request(app).get("/api/status");
+      expect(res.status).toBe(200);
+      const analytics = res.body.services.find(
+        (s: { service: string }) => s.service === "analytics-api"
+      );
+      const checker = res.body.services.find(
+        (s: { service: string }) => s.service === "health-checker"
+      );
+      expect(analytics.status).toBe("healthy");
+      expect(checker.status).toBe("healthy");
+      spy.mockRestore();
+    });
+
+    it("returns 'unhealthy' for the failing upstream while keeping the healthy one", async () => {
+      // analytics-api は 200 healthy、health-checker は接続不能。
+      // 片方の失敗が全体の 5xx を招かないことを回帰確認する。
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never)
+        .mockRejectedValueOnce(new AxiosError("ECONNREFUSED"));
+      const res = await request(app).get("/api/status");
+      expect(res.status).toBe(200);
+      const analytics = res.body.services.find(
+        (s: { service: string }) => s.service === "analytics-api"
+      );
+      const checker = res.body.services.find(
+        (s: { service: string }) => s.service === "health-checker"
+      );
+      const gateway = res.body.services.find(
+        (s: { service: string }) => s.service === "api-gateway"
+      );
+      expect(analytics.status).toBe("healthy");
+      expect(checker.status).toBe("unhealthy");
+      // api-gateway 自身は常に healthy を自称する
+      expect(gateway.status).toBe("healthy");
+      spy.mockRestore();
+    });
+
+    it("uses STATUS_PROBE_TIMEOUT (not PROXY_TIMEOUT) for upstream /health probes", async () => {
+      // PR #112 で PROXY_TIMEOUT (5000ms) から STATUS_PROBE_TIMEOUT (3000ms 既定) に切り替わった契約を
+      // 明示的に回帰検知する。将来のリファクタで誤って PROXY_TIMEOUT に戻したときにここで落ちる。
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never)
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never);
+      const res = await request(app).get("/api/status");
+      expect(res.status).toBe(200);
+      const analyticsConfig = spy.mock.calls[0][1] as { timeout?: number };
+      const checkerConfig = spy.mock.calls[1][1] as { timeout?: number };
+      expect(analyticsConfig.timeout).toBe(STATUS_PROBE_TIMEOUT);
+      expect(checkerConfig.timeout).toBe(STATUS_PROBE_TIMEOUT);
+      // 既定値が 3000ms のままであることも同時に保証する
+      expect(STATUS_PROBE_TIMEOUT).toBe(3000);
+      spy.mockRestore();
+    });
+
+    it("preserves service order: analytics-api, health-checker, api-gateway", async () => {
+      // 呼び出し順（Promise.all の入力配列順）と最終レスポンス配列順が一致することを確認。
+      // ダッシュボード側で「先頭 = 一次データストア」の暗黙前提を持つケースに備え、
+      // ここが崩れないよう固定する。
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never)
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never);
+      const res = await request(app).get("/api/status");
+      expect(res.status).toBe(200);
+      expect(res.body.services.map((s: { service: string }) => s.service)).toEqual([
+        "analytics-api",
+        "health-checker",
+        "api-gateway",
+      ]);
+      spy.mockRestore();
+    });
+
+    it("probes ANALYTICS_URL/health and CHECKER_URL/health", async () => {
+      const spy = jest
+        .spyOn(axios, "get")
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never)
+        .mockResolvedValueOnce({ status: 200, data: { status: "healthy" } } as never);
+      await request(app).get("/api/status");
+      expect(spy.mock.calls[0][0]).toBe(`${ANALYTICS_URL}/health`);
+      expect(spy.mock.calls[1][0]).toBe(`${CHECKER_URL}/health`);
+      spy.mockRestore();
     });
   });
 
