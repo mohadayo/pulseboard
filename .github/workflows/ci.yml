@@ -25,6 +25,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # pip の依存キャッシュを有効化。requirements-dev.txt のハッシュが
+          # キャッシュキーになるため、依存追加/更新時のみキャッシュが再生成される。
+          cache: pip
+          cache-dependency-path: analytics-api/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: flake8 --max-line-length=120 --exclude=__pycache__ main.py
       - run: pytest -v
@@ -54,6 +58,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          # npm の依存キャッシュを有効化。package-lock.json のハッシュが
+          # キャッシュキーになるため、依存追加/更新時のみキャッシュが再生成される。
+          cache: npm
+          cache-dependency-path: api-gateway/package-lock.json
       - run: npm ci
       - run: npm run lint
       - run: npm test
