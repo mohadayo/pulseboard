@@ -348,4 +348,4 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-export { app, ANALYTICS_URL, CHECKER_URL, MAX_REQUEST_BODY, STATUS_PROBE_TIMEOUT };
+export { app, logger, ANALYTICS_URL, CHECKER_URL, MAX_REQUEST_BODY, STATUS_PROBE_TIMEOUT };
