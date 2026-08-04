@@ -482,6 +482,10 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `MAX_RECORDS` | `10000` | Analytics API: 保存するメトリクスの最大件数 |
 | `METRICS_DEFAULT_LIMIT` | `100` | Analytics API: `GET /metrics` のデフォルト返却件数 |
 | `METRICS_MAX_LIMIT` | `1000` | Analytics API: `GET /metrics` の `limit` 上限 |
+| `PROXY_TIMEOUT` | `5000` | API Gateway: analytics-api / health-checker への上流プロキシ呼び出しの HTTP タイムアウト（ミリ秒） |
+| `STATUS_PROBE_TIMEOUT` | `3000` | API Gateway: `/api/status` から各サービス `/health` を叩く際のタイムアウト（ミリ秒）。`PROXY_TIMEOUT` より短めに設定し、集約 API が遅延しても素早く応答できるようにする |
+| `MAX_REQUEST_BODY` | `256kb` | API Gateway: `express.json` が受け付ける最大 JSON ボディサイズ。`bytes` 互換の文字列（例: `512kb`, `2mb`）を指定 |
+| `SHUTDOWN_TIMEOUT_MS` | `10000` | API Gateway: SIGTERM 受信後、進行中リクエストの完了を待つ最大時間（ミリ秒）。超過時は `exit 1` で強制終了 |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `30` | Health Checker: graceful shutdown 待機時間（秒） |
 | `CHECKER_READ_HEADER_TIMEOUT` | `5` | Health Checker: HTTP リクエストヘッダ読み取りタイムアウト（秒） |
 | `CHECKER_READ_TIMEOUT` | `15` | Health Checker: HTTP リクエスト全体の読み取りタイムアウト（秒） |
