@@ -1,0 +1,73 @@
+# api-gateway (TypeScript / Node.js / Express) の Docker ビルドコンテキストから除外するファイル
+#
+# 目的:
+#   - ビルドコンテキスト送信を高速化する
+#   - node_modules をローカルからコピーせず Dockerfile の `npm ci` に任せる
+#   - テストファイル・開発用生成物・機密ファイルを最終イメージに含めない
+
+# VCS / CI メタデータ
+.git
+.gitignore
+.gitattributes
+.github
+
+# ローカル環境変数（機密混入防止）
+.env
+.env.*
+!.env.example
+
+# エディタ / OS 生成物
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node.js 依存 / ビルド生成物
+# node_modules はローカルの OS/Arch 依存バイナリを含む可能性があるため必ず除外し、
+# コンテナ内の `npm ci` でクリーンな状態から解決する。
+node_modules/
+dist/
+build/
+.npm/
+.node-gyp/
+
+# TypeScript / テスト / カバレッジ
+coverage/
+*.tsbuildinfo
+.jest-cache/
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+src/**/*.test.ts
+src/**/*.spec.ts
+tests/
+__tests__/
+jest.config.js
+
+# ESLint / 開発用設定（ランタイムでは不要）
+.eslintrc*
+.eslintcache
+
+# ロックファイル以外の管理ツール（存在する場合）
+yarn.lock
+pnpm-lock.yaml
+
+# ドキュメント（イメージには不要）
+README.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+LICENSE
+SECURITY.md
+*.md
+
+# Docker 自体（自己参照防止）
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# ローカル生成物
+*.log
+npm-debug.log*

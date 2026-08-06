@@ -1,0 +1,57 @@
+# health-checker (Go) の Docker ビルドコンテキストから除外するファイル
+#
+# 目的:
+#   - ビルドコンテキスト送信を高速化する
+#   - テストファイル・開発用生成物・機密ファイルを最終イメージに含めない
+#   - Multi-stage ビルドの builder ステージでも不要ファイルを避ける
+
+# VCS / CI メタデータ
+.git
+.gitignore
+.gitattributes
+.github
+
+# ローカル環境変数（機密混入防止）
+.env
+.env.*
+!.env.example
+
+# エディタ / OS 生成物
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Go テストファイル / カバレッジ
+*_test.go
+testdata/
+*.out
+coverage.txt
+coverage.html
+
+# Go ビルド生成物
+/health-checker
+/bin/
+/dist/
+*.exe
+
+# ベンダリング（本リポジトリは vendor を使用していないため念のため除外）
+vendor/
+
+# ドキュメント（イメージには不要）
+README.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+LICENSE
+SECURITY.md
+*.md
+
+# Docker 自体（自己参照防止）
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# ローカル生成物
+*.log
