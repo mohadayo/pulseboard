@@ -1,0 +1,68 @@
+# analytics-api (Python / FastAPI) の Docker ビルドコンテキストから除外するファイル
+#
+# 目的:
+#   - ビルドコンテキスト送信を高速化する
+#   - テストファイル・開発用生成物・機密ファイルを最終イメージに含めない
+#   - キャッシュ効率を維持する（無関係な変更でキャッシュ無効化を防ぐ）
+
+# VCS / CI メタデータ
+.git
+.gitignore
+.gitattributes
+.github
+
+# ローカル環境変数（機密混入防止）
+.env
+.env.*
+!.env.example
+
+# エディタ / OS 生成物
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# 仮想環境
+.venv/
+venv/
+ENV/
+env/
+
+# 開発用依存 / テスト
+requirements-dev.txt
+test_*.py
+*_test.py
+tests/
+
+# ドキュメント（イメージには不要）
+README.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+LICENSE
+SECURITY.md
+*.md
+
+# Docker 自体（自己参照防止）
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# ローカル生成物
+*.log
