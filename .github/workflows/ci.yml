@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# ワークフロー全体のデフォルト権限を最小限 (contents: read) に制限する。
+# 各ジョブはリポジトリのチェックアウト以外に GITHUB_TOKEN を利用しないため、
+# 書き込み権限を持たせない。将来ジョブ単位で追加権限が必要になった場合は、
+# そのジョブに `permissions:` を上書き宣言する運用とする。
+# 参考: https://docs.github.com/en/actions/security-guides/automatic-token-authentication
+permissions:
+  contents: read
+
 # 同一ワークフロー・同一 ref (PR ブランチや main) で新しいジョブが起動したら、
 # 進行中の古いジョブをキャンセルする。PR に短時間で連続 push した場合の
 # 実行枠・実行時間の無駄を削減する。
