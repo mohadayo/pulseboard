@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -241,12 +242,41 @@ func reportMetricWithPolicy(
 	return lastErr
 }
 
+// isValidTargetURL は EXTRA_TARGETS のエントリの URL が health-checker から
+// 実際に http.Client.Get() 可能な形式かを検証する。
+//
+// Go の net/http.Client は http / https スキームのみをサポートするため、
+// スキーム抜け（"localhost:8080/health"）や別スキーム（"tcp://…"）・
+// ホスト抜け（"http://"）を parseExtraTargets の時点で silent drop する。
+// 旧実装ではこれらも valid として登録され、毎チェックサイクルで
+// "unsupported protocol scheme" 相当のエラーが積み上がり、不達ターゲットの
+// "unhealthy" メトリクスが analytics-api に送り続けられていた。
+func isValidTargetURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	if u.Host == "" {
+		return false
+	}
+	return true
+}
+
 // parseExtraTargets は EXTRA_TARGETS 環境変数の値をパースし、追加ターゲットを返す。
 //
 // 期待する形式は JSON 配列で、各要素は `{"name":"","url":""}`。空文字列・
-// パース失敗・型ミスマッチ・name/url いずれかが空のエントリは無視し、
-// プロセスは常にデフォルトターゲットのみで起動できるように fail-open にする
-// （運用時に誤った JSON を渡してもコンテナが再起動ループしない）。
+// パース失敗・型ミスマッチ・name/url いずれかが空のエントリ・URL が http(s)
+// スキーム以外のエントリは無視し、プロセスは常にデフォルトターゲットのみで
+// 起動できるように fail-open にする（運用時に誤った JSON を渡してもコンテナが
+// 再起動ループしない）。
+//
+// URL 検証で弾いたエントリは silent drop ではなく `[WARN]` ログを出し、
+// mergeExtraTargets の name 衝突ドロップと同じ観測性ポリシーに揃える
+// （name/url が完全に空のエントリは明らかな typo/incomplete なので従来通り
+// 静かにスキップする）。
 //
 // 復帰値の第 2 引数はパースに失敗した場合のエラー。呼び元は警告ログのみに使い、
 // 起動可否の判定には使わない（設定ミス通知の観点で有用だが致命傷ではない）。
@@ -261,6 +291,13 @@ func parseExtraTargets(raw string) ([]ServiceTarget, error) {
 	valid := make([]ServiceTarget, 0, len(entries))
 	for _, e := range entries {
 		if e.Name == "" || e.URL == "" {
+			continue
+		}
+		if !isValidTargetURL(e.URL) {
+			log.Printf(
+				"[WARN] Ignoring EXTRA_TARGETS entry %q: invalid URL %q (must be http:// or https:// with a host)",
+				e.Name, e.URL,
+			)
 			continue
 		}
 		valid = append(valid, e)
