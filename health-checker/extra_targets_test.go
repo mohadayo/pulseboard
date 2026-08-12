@@ -65,6 +65,30 @@ func TestParseExtraTargets(t *testing.T) {
 			raw:     `{"name":"x","url":"http://x"}`,
 			wantErr: true,
 		},
+		{
+			// スキーム抜きの "localhost:8080/health" は url.Parse で
+			// Scheme="localhost" と解釈され http.Client.Get で失敗するため drop する。
+			name: "entry with scheme-less URL is skipped",
+			raw:  `[{"name":"redis","url":"localhost:6379/ping"},{"name":"ok","url":"http://ok"}]`,
+			want: []ServiceTarget{{Name: "ok", URL: "http://ok"}},
+		},
+		{
+			// tcp:// など http(s) 以外のスキームは net/http.Client が非対応のため drop する。
+			name: "entry with non-http scheme is skipped",
+			raw:  `[{"name":"db","url":"tcp://db:5432"},{"name":"ok","url":"https://ok"}]`,
+			want: []ServiceTarget{{Name: "ok", URL: "https://ok"}},
+		},
+		{
+			// "http://" はスキームがあっても Host が空でリクエスト先が定まらないため drop する。
+			name: "entry with empty host is skipped",
+			raw:  `[{"name":"broken","url":"http://"},{"name":"ok","url":"http://ok"}]`,
+			want: []ServiceTarget{{Name: "ok", URL: "http://ok"}},
+		},
+		{
+			name: "https scheme is accepted",
+			raw:  `[{"name":"prod","url":"https://prod.example.com/health"}]`,
+			want: []ServiceTarget{{Name: "prod", URL: "https://prod.example.com/health"}},
+		},
 	}
 
 	for _, tc := range cases {
@@ -226,5 +250,41 @@ func TestMergeExtraTargets(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// isValidTargetURL は EXTRA_TARGETS 由来 URL が http.Client.Get 可能かを判定する。
+// 実運用で観測された誤設定パターン（スキーム抜き、非 http スキーム、ホスト抜き）
+// と受理すべき正常系（http / https、ポート・パス付き、IP アドレス）を網羅する。
+func TestIsValidTargetURL(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"http host", "http://ok", true},
+		{"https host", "https://ok.example.com", true},
+		{"http with port", "http://ok:8080", true},
+		{"https with path and query", "https://ok.example.com/health?verbose=1", true},
+		{"http ipv4", "http://127.0.0.1:8080/health", true},
+
+		{"empty string", "", false},
+		{"scheme-less host:port", "localhost:6379/ping", false},
+		{"bare host", "example.com/health", false},
+		{"tcp scheme", "tcp://db:5432", false},
+		{"ftp scheme", "ftp://files.example.com", false},
+		{"file scheme", "file:///etc/passwd", false},
+		{"scheme only, empty host", "http://", false},
+		{"https scheme only, empty host", "https://", false},
+		// url.Parse がスキームを小文字化するため "HTTP://" は "http://" 相当として受理される。
+		{"uppercase scheme is accepted (parser lowercases)", "HTTP://ok", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isValidTargetURL(tc.raw); got != tc.want {
+				t.Errorf("isValidTargetURL(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
 	}
 }
