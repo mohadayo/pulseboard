@@ -88,11 +88,15 @@ npm start
 | GET | `/api/metrics` | List all metrics (proxy to Analytics API、`?q=` で service 名部分一致検索) |
 | GET | `/api/metrics/summary` | Per-service uptime and response time summary（`?q=` で service 名部分一致検索） |
 | GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API、`?q=` で部分一致検索） |
+| GET | `/api/metrics/count` | フィルタ後の件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/api/metrics/services` | サービス一覧（`?q=` で部分一致検索、`?sort=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/api/metrics/services/names` | distinct な service 名一覧のみを返す軽量エンドポイント（フィルタドロップダウン populate 用、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
+| GET | `/api/metrics/services/:name` | 単一サービスの詳細（`?since=` / `?until=`）。該当サービスが存在しなければ analytics-api の 404 をそのまま伝播 |
 | GET | `/api/metrics/timeseries` | 時系列バケット集計（`?bucket_seconds=` でバケット幅を指定、既定 60 秒） |
 | GET | `/api/metrics/uptime` | 全サービス横断の SLA 集約（uptime_pct / MTTR / 進行中インシデント。`?q=` / `?since=` / `?until=` / `?ongoing_only=` / `?limit=` / `?offset=` / `?order=`） |
 | POST | `/api/metrics` | Record a metric (proxy to Analytics API) |
+| POST | `/api/metrics/batch` | 複数メトリクスを 1 リクエストでまとめて記録（proxy to Analytics API `/metrics/batch`） |
+| DELETE | `/api/metrics` | サービス名 / 時刻を組合せて対象メトリクスを削除（`?service=` / `?before=` / `?status=`、少なくとも 1 つ指定必須） |
 | GET | `/api/check` | Run health checks on all targets (proxy to Checker) |
 | GET | `/api/status` | Aggregated health status of all internal services |
 
@@ -403,6 +407,7 @@ curl "http://localhost:8001/metrics/services/web/timeseries?bucket_seconds=300&s
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | GET | `/check` | Run health checks on all configured targets |
+| GET | `/targets` | 起動時に構築した監視対象一覧（`analytics-api` / `api-gateway` + `EXTRA_TARGETS` 由来）を JSON で返す。運用時に `ANALYTICS_URL` / `GATEWAY_URL` / `EXTRA_TARGETS` の反映状態を curl 一発で確認する用途 |
 | GET | `/config` | 実行中の設定値（間隔・タイムアウト・リトライ・analytics-api URL）を JSON で返す |
 
 **実行時設定の確認 (`GET /config`):**
