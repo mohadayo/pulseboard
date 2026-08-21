@@ -2,6 +2,24 @@
 
 Service health monitoring and analytics platform built with a polyglot microservice architecture using Python, Go, and TypeScript.
 
+## 目次
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Using Docker Compose](#using-docker-compose)
+  - [Manual Setup](#manual-setup)
+- [API Reference](#api-reference)
+  - [API Gateway (port 8000)](#api-gateway-port-8000)
+  - [Analytics API (port 8001)](#analytics-api-port-8001)
+  - [Health Checker (port 8002)](#health-checker-port-8002)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [CI/CD](#cicd)
+- [Project Structure](#project-structure)
+- [License](#license)
+
 ## Overview
 
 PulseBoard collects health check metrics from monitored services, analyzes uptime and response time trends, and provides a unified API gateway for accessing all monitoring data.
