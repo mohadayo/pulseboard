@@ -196,8 +196,17 @@ Response:
 | GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント（per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
 | GET | `/metrics/count` | フィルタ後のレコード件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
+| GET | `/metrics/services/{service_name}` | 単一サービスの詳細集計（`total_checks` / `healthy_checks` / `uptime_pct` / percentile / `latest_*` を 1 レスポンスに集約、`?since=` / `?until=`）。該当サービスが存在しなければ 404 |
 | GET | `/metrics/services/{service_name}/timeseries` | 単一サービスに絞った時系列バケット集計（`?bucket_seconds=` / `?status=` / `?since=` / `?until=`）。該当サービスが存在しなければ 404 |
 | GET | `/metrics/services/{service_name}/latest` | 単一サービスの直近 1 件の observation を `{service, status, response_time_ms, timestamp}` 形で返す軽量エンドポイント（`?since=` / `?until=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/recent` | 単一サービスの直近 N 件の observation を `timestamp` 降順で返す（集計なし。`?limit=` 1〜200 / `?since=` / `?until=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/status_changes` | 単一サービスのステータス遷移イベントを時系列順に返す（`?since=` / `?until=` / `?limit=` / `?offset=` / `?order=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/by_status` | 単一サービスの観測を `status` 別にグルーピングし、status ごとの count / avg / min / max / p50 / p95 / p99 / first_seen / last_seen を返す（`?since=` / `?until=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/by_hour_of_day` | 単一サービスの観測を「1 日のうちの時刻 (UTC 00〜23)」でグルーピングして返す（`?since=` / `?until=`）。populated バケットのみ返却。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/incidents` | 単一サービスの unhealthy インシデント一覧（開始・終了・duration・ongoing フラグ、`?since=` / `?until=` / `?limit=` / `?offset=` / `?order=` / `?min_duration_seconds=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/services/{service_name}/uptime` | 単一サービスの SLA 集約（`uptime_pct` に加え `incident_count` / `total_incident_seconds` / `longest_incident_seconds` / `mean_incident_seconds` / `ongoing_incident`、`?since=` / `?until=`）。該当サービスが存在しなければ 404 |
+| GET | `/metrics/incidents` | 全サービス横断のインシデント一覧（`?service=` / `?q=` / `?since=` / `?until=` / `?ongoing_only=` / `?limit=` / `?offset=` / `?order=` / `?min_duration_seconds=`） |
+| GET | `/metrics/uptime` | 全サービス横断の SLA 集約（`uptime_pct` / MTTR / 進行中インシデント。`?q=` / `?since=` / `?until=` / `?ongoing_only=` / `?limit=` / `?offset=` / `?order=`） |
 
 #### Delete Metrics
 
