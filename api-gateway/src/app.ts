@@ -23,6 +23,29 @@ const STATUS_PROBE_TIMEOUT = parseInt(process.env.STATUS_PROBE_TIMEOUT || "3000"
 const MAX_REQUEST_BODY = process.env.MAX_REQUEST_BODY || "256kb";
 
 const app = express();
+
+// フレームワーク情報を露出しない。Express は既定で `X-Powered-By: Express`
+// を返すが、これは攻撃者に既知脆弱性版を探す手がかりを与えるだけで、
+// クライアントに機能上のメリットは無い。
+app.disable("x-powered-by");
+
+// すべての応答に最小限のセキュリティヘッダを付与する。
+// `helmet` を導入せず素の middleware で完結させることで依存を増やさない。
+//
+// - `X-Content-Type-Options: nosniff`: JSON エンドポイントを別 MIME として
+//   解釈させる MIME sniffing 攻撃を抑止。ブラウザから直接叩かれた場合や、
+//   拡張ツール経由でのアクセス時にも一貫して JSON として扱われる。
+// - `X-Frame-Options: DENY`: 本 API を `<iframe>` に埋め込ませない。JSON API は
+//   フレーム表示を意図しないため常時拒否 (クリックジャッキング対策)。
+// - `Referrer-Policy: no-referrer`: 内部 URL やクエリ文字列がリンク先の
+//   Referrer ヘッダとして外部に漏れないよう抑止。
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
+
 app.use(express.json({ limit: MAX_REQUEST_BODY }));
 
 // アクセスログ。リクエスト着信時ではなく、応答完了 (res 'finish') の時点で
