@@ -12,6 +12,28 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("security response headers", () => {
+    // フレームワーク版数を漏らさない・MIME sniffing / clickjacking / referrer 漏洩を
+    // 抑止する最小限のヘッダが常時付与されていることを固定する。
+    it("adds nosniff / DENY / no-referrer and omits x-powered-by on 200", async () => {
+      const res = await request(app).get("/health");
+      expect(res.status).toBe(200);
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["x-frame-options"]).toBe("DENY");
+      expect(res.headers["referrer-policy"]).toBe("no-referrer");
+      expect(res.headers["x-powered-by"]).toBeUndefined();
+    });
+
+    it("adds the same security headers to 404 responses", async () => {
+      const res = await request(app).get("/definitely-not-a-route");
+      expect(res.status).toBe(404);
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["x-frame-options"]).toBe("DENY");
+      expect(res.headers["referrer-policy"]).toBe("no-referrer");
+      expect(res.headers["x-powered-by"]).toBeUndefined();
+    });
+  });
+
   describe("GET /api/metrics", () => {
     it("returns 502 when analytics is down", async () => {
       const res = await request(app).get("/api/metrics");
