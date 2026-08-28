@@ -18,6 +18,7 @@ Service health monitoring and analytics platform built with a polyglot microserv
 - [Testing](#testing)
 - [CI/CD](#cicd)
 - [Project Structure](#project-structure)
+- [Documentation](#documentation)
 - [License](#license)
 
 ## Overview
@@ -108,7 +109,7 @@ npm start
 | GET | `/api/metrics/overview` | 全サービス横断のトップレベル稼働サマリ（proxy to Analytics API、`?q=` で部分一致検索） |
 | GET | `/api/metrics/count` | フィルタ後の件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/api/metrics/services` | サービス一覧（`?q=` で部分一致検索、`?sort=` / `?order=` / `?limit=` / `?offset=`） |
-| GET | `/api/metrics/services/names` | distinct な service 名一覧のみを返す軽量エンドポイント（フィルタドロップダウン populate 用、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
+| GET | `/api/metrics/services/names` | distinct な service 名一覧のみを返す軽量エンドポイント(フィルタドロップダウン populate 用、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`) |
 | GET | `/api/metrics/services/:name` | 単一サービスの詳細（`?since=` / `?until=`）。該当サービスが存在しなければ analytics-api の 404 をそのまま伝播 |
 | GET | `/api/metrics/timeseries` | 時系列バケット集計（`?bucket_seconds=` でバケット幅を指定、既定 60 秒） |
 | GET | `/api/metrics/uptime` | 全サービス横断の SLA 集約（uptime_pct / MTTR / 進行中インシデント。`?q=` / `?since=` / `?until=` / `?ongoing_only=` / `?limit=` / `?offset=` / `?order=`） |
@@ -193,7 +194,7 @@ Response:
 | GET | `/metrics/summary` | Per-service summary statistics |
 | GET | `/metrics/overview` | 全レコードを 1 つに集約したトップレベル稼働サマリ（`?service=` / `?status=` / `?since=` / `?until=`） |
 | GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
-| GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント（per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`） |
+| GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント(per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`) |
 | GET | `/metrics/count` | フィルタ後のレコード件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/services/{service_name}` | 単一サービスの詳細集計（`total_checks` / `healthy_checks` / `uptime_pct` / percentile / `latest_*` を 1 レスポンスに集約、`?since=` / `?until=`）。該当サービスが存在しなければ 404 |
@@ -581,6 +582,16 @@ pulseboard/
 ├── .gitignore
 └── README.md
 ```
+
+## Documentation
+
+`docs/` 配下に、開発・運用・障害対応のためのドキュメントを整理しています。
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — システム構成・サービス境界・レイヤ責務のバードビュー
+- [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) — メトリクス・構造化ログ・分散トレース・SLO/SLI・アラート設計の統一運用方針
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — 障害発生時の観測・切り分け・復旧手順
+
+コントリビュートのガイドは [`CONTRIBUTING.md`](CONTRIBUTING.md)、コミュニティ規範は [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)、セキュリティ報告は [`SECURITY.md`](SECURITY.md) を参照してください。
 
 ## License
 
