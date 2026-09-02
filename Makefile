@@ -1,4 +1,4 @@
-.PHONY: test test-python test-go test-ts lint up down build clean
+.PHONY: test test-python test-go test-ts lint lint-python lint-go lint-ts type-check type-check-ts up down build clean
 
 test: test-python test-go test-ts
 
@@ -21,6 +21,15 @@ lint-go:
 
 lint-ts:
 	cd api-gateway && npm run lint
+
+# tsc は tsconfig.json 側でテストファイルを除外しているため、`npm run build`
+# だけではテストコードの型エラーが検出できない。CI と一致させるため、
+# tsconfig.typecheck.json を用いてテストコードも含めた `tsc --noEmit` を
+# ローカルからも簡単に走らせられるショートカットを提供する。
+type-check: type-check-ts
+
+type-check-ts:
+	cd api-gateway && npm install --silent && npm run type-check
 
 build:
 	docker compose build
