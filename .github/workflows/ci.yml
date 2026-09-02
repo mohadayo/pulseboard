@@ -72,6 +72,13 @@ jobs:
           cache-dependency-path: api-gateway/package-lock.json
       - run: npm ci
       - run: npm run lint
+      # tsconfig.json はテストファイル (`**/*.test.ts`) を build 対象から除外しているため、
+      # `npm run build` 単独ではテストコードの型エラーを検出できない。ts-jest は
+      # デフォルトでは isolated モジュール扱いで型検査を省略するケースがあり、
+      # テストコードにひそむ型ミスマッチがすり抜けやすい。専用の
+      # `tsconfig.typecheck.json` を使ってテストコードも含めた `tsc --noEmit` を
+      # `npm test` の前段に噛ませることで、ランタイム前に型エラーで CI を落とす。
+      - run: npm run type-check
       - run: npm test
 
   docker-build:
