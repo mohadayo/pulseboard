@@ -589,6 +589,8 @@ pulseboard/
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — システム構成・サービス境界・レイヤ責務のバードビュー
 - [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) — メトリクス・構造化ログ・分散トレース・SLO/SLI・アラート設計の統一運用方針
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — リリース・ビルド・環境昇格・ロールバックの手順書
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — インシデント初動 / サービス別リカバリ手順
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — 障害発生時の観測・切り分け・復旧手順
 
 コントリビュートのガイドは [`CONTRIBUTING.md`](CONTRIBUTING.md)、コミュニティ規範は [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)、セキュリティ報告は [`SECURITY.md`](SECURITY.md) を参照してください。
