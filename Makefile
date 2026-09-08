@@ -1,4 +1,4 @@
-.PHONY: test test-python test-go test-ts lint lint-python lint-go lint-ts type-check type-check-ts up down build clean
+.PHONY: test test-python test-go test-ts lint lint-python lint-go lint-ts type-check type-check-ts ci up down build clean
 
 test: test-python test-go test-ts
 
@@ -19,8 +19,12 @@ lint-python:
 lint-go:
 	cd health-checker && go vet ./...
 
+# 旧実装は `npm install` を挟まず `npm run lint` だけを実行していたため、
+# `node_modules/` が未生成のリポジトリで `make lint` を先に呼ぶと eslint
+# 本体が見つからず失敗していた（test-ts / type-check-ts は install 済み）。
+# 兄弟ターゲットと同じ前処理に揃え、どの順で叩いても成立するようにする。
 lint-ts:
-	cd api-gateway && npm run lint
+	cd api-gateway && npm install --silent && npm run lint
 
 # tsc は tsconfig.json 側でテストファイルを除外しているため、`npm run build`
 # だけではテストコードの型エラーが検出できない。CI と一致させるため、
@@ -30,6 +34,12 @@ type-check: type-check-ts
 
 type-check-ts:
 	cd api-gateway && npm install --silent && npm run type-check
+
+# CI パイプライン (.github/workflows/ci.yml) をローカルで再現する集約ターゲット。
+# CI と同じ順序 (lint → type-check → test) で走らせるため、push 前にこの
+# 1 コマンドで CI 失敗を先取り検知できる。個別ターゲットが失敗した時点で
+# Make のデフォルト挙動により後続はスキップされる。
+ci: lint type-check test
 
 build:
 	docker compose build
