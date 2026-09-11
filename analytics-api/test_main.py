@@ -3873,3 +3873,48 @@ def test_metrics_store_all_uptime_unit():
         "incident_count", "ongoing_incident", "total_incident_seconds",
         "longest_incident_seconds", "mean_incident_seconds",
     }
+
+
+# ---------- MAX_RECORDS floor guard ----------
+
+
+def test_max_records_floor_guard_zero(monkeypatch):
+    # MAX_RECORDS=0 を設定して `main` をリロードすると eviction が全レコードを
+    # 削除してしまい、POST は 201 なのに GET は常に空という silent データロスが
+    # 起きる。回避するため import 時点で floor guard を適用し、実行時ストアの
+    # 上限は最低 1 に丸められる（GH-203）。
+    import importlib
+    monkeypatch.setenv("MAX_RECORDS", "0")
+    import main as main_module
+    reloaded = importlib.reload(main_module)
+    try:
+        assert reloaded.MAX_RECORDS == 1
+        assert reloaded.store.max_records == 1
+        # 上限 1 でも POST → GET は成立する（挿入直後に即消しにならない）
+        c = TestClient(reloaded.app)
+        reloaded.store.records.clear()
+        resp = c.post(
+            "/metrics",
+            json={"service": "web", "status": "healthy", "response_time_ms": 1.0},
+        )
+        assert resp.status_code == 201
+        get_resp = c.get("/metrics")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["count"] == 1
+    finally:
+        monkeypatch.delenv("MAX_RECORDS", raising=False)
+        importlib.reload(main_module)
+
+
+def test_max_records_floor_guard_negative(monkeypatch):
+    # 負値でも同じく floor guard が働く。
+    import importlib
+    monkeypatch.setenv("MAX_RECORDS", "-5")
+    import main as main_module
+    reloaded = importlib.reload(main_module)
+    try:
+        assert reloaded.MAX_RECORDS == 1
+        assert reloaded.store.max_records == 1
+    finally:
+        monkeypatch.delenv("MAX_RECORDS", raising=False)
+        importlib.reload(main_module)

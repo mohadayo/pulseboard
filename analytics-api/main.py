@@ -18,7 +18,11 @@ logger = logging.getLogger("analytics-api")
 
 app = FastAPI(title="PulseBoard Analytics API", version="1.0.0")
 
-MAX_RECORDS = int(os.getenv("MAX_RECORDS", "10000"))
+# `MAX_RECORDS` にも `METRICS_DEFAULT_LIMIT` 等と同じ floor guard を付ける。
+# 誤って `0` や負値を設定すると、`MetricsStore.add` の eviction ループが
+# 挿入直後の 1 レコードすら削除して全 POST 応答が 201 のまま `GET /metrics` は
+# 空になり、原因究明が極めて困難になる（ingest 障害と設定ミスを区別できない）。
+MAX_RECORDS = max(1, int(os.getenv("MAX_RECORDS", "10000")))
 MAX_SERVICE_LENGTH = 100
 MAX_RESPONSE_TIME_MS = 60_000.0
 METRICS_DEFAULT_LIMIT = max(1, int(os.getenv("METRICS_DEFAULT_LIMIT", "100")))
