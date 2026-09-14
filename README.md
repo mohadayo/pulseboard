@@ -592,6 +592,7 @@ pulseboard/
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — リリース・ビルド・環境昇格・ロールバックの手順書
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — インシデント初動 / サービス別リカバリ手順
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — 障害発生時の観測・切り分け・復旧手順
+- [`docs/FAQ.md`](docs/FAQ.md) — 設定・運用・仕様に関するよくある質問と回答
 
 コントリビュートのガイドは [`CONTRIBUTING.md`](CONTRIBUTING.md)、コミュニティ規範は [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)、セキュリティ報告は [`SECURITY.md`](SECURITY.md) を参照してください。
 
