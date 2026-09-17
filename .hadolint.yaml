@@ -1,0 +1,17 @@
+# hadolint の共有設定
+#
+# 目的:
+#   3 サービス (Python/Go/TypeScript) の Dockerfile に対して一貫した静的解析
+#   ポリシーを適用しつつ、実運用上意味の薄い warning を除外する。
+#
+# 各項目の理由:
+#   - DL3018: `apk add` におけるパッケージバージョン pin を求める warning。
+#     Alpine のリポジトリはバージョンをローテートするため、`ca-certificates=<ver>`
+#     の pin は数週間～数ヶ月で invalid になり CI が壊れる。ca-certificates 等の
+#     セキュリティ関連パッケージについてはむしろ最新を入れたほうが安全なので、
+#     プロジェクト方針として ignore する。
+#     (`apt-get install` 側の DL3008 は Debian/Ubuntu の LTS 想定で pin 現実的
+#      なため、既定通り warning のまま残す)
+
+ignored:
+  - DL3018
