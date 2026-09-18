@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import axios, { AxiosError, AxiosRequestConfig } from "axios";
 import { createLogger, format, transports } from "winston";
+import { randomUUID } from "crypto";
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL || "info",
@@ -21,6 +22,28 @@ const STATUS_PROBE_TIMEOUT = parseInt(process.env.STATUS_PROBE_TIMEOUT || "3000"
 // 環境変数で上書きできる形で明示する。analytics-api の /metrics/batch
 // （最大 500 件）の実用サイズも収まる 256kb を既定値に置く。
 const MAX_REQUEST_BODY = process.env.MAX_REQUEST_BODY || "256kb";
+
+// 上流から受け取った X-Request-Id を再利用する際に許容する文字集合と長さ。
+// 一般的な UUID / ULID / base64url ID を通しつつ、HTTP ヘッダにそのまま
+// 埋め込めない制御文字・スペース・改行 (ログ / レスポンススプリッティング対策)
+// と、極端に長い値 (バッファ肥大化) を拒否する。上限 128 は AWS の
+// X-Amzn-Trace-Id や Google Cloud の trace context を包含する余裕を持たせた値。
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._+/=-]{1,128}$/;
+
+function sanitizeInboundRequestId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (!REQUEST_ID_PATTERN.test(value)) return null;
+  return value;
+}
+
+// Express の Request 型を拡張し、middleware で採番したリクエスト ID を
+// 型安全に参照できるようにする。`declare module` は同一プロセス内の
+// 型情報のみに影響し、ランタイム挙動には手を加えない。
+declare module "express-serve-static-core" {
+  interface Request {
+    requestId?: string;
+  }
+}
 
 const app = express();
 
@@ -46,6 +69,21 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// リクエスト ID middleware。上流 (LB / 別サービス) から受け取った
+// `X-Request-Id` を検証したうえで再利用し、不正または未指定であれば
+// `crypto.randomUUID()` で新規採番する。応答ヘッダに同じ値を返すことで、
+// クライアントは失敗時に「どのリクエストか」をログと突き合わせられる。
+// アクセスログにも `request_id` として付与し、分散環境でのリクエスト
+// 追跡 (correlation) を可能にする。express.json より前に配置するのは、
+// ボディ解析エラーで 4xx を返すケースでも ID を確実に付与するため。
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const inbound = sanitizeInboundRequestId(req.header("x-request-id"));
+  const requestId = inbound ?? randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
+
 app.use(express.json({ limit: MAX_REQUEST_BODY }));
 
 // アクセスログ。リクエスト着信時ではなく、応答完了 (res 'finish') の時点で
@@ -53,6 +91,8 @@ app.use(express.json({ limit: MAX_REQUEST_BODY }));
 // メソッドとパスだけを着信時に出していたため、レスポンスコードや遅延が
 // ログから読み取れず観測性が低かった。process.hrtime.bigint() を使うことで
 // Date.now() の 1ms 粒度より細かい計測を行う。
+// `request_id` は前段の middleware で採番済みで、上流サービスや
+// クライアントログとの相関追跡に利用する。
 app.use((req: Request, res: Response, next: NextFunction) => {
   const start = process.hrtime.bigint();
   res.on("finish", () => {
@@ -61,6 +101,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
       ip: req.ip,
       status: res.statusCode,
       duration_ms: Math.round(durationMs * 1000) / 1000,
+      request_id: req.requestId,
     });
   });
   next();

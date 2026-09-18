@@ -34,6 +34,80 @@ describe("API Gateway", () => {
     });
   });
 
+  describe("X-Request-Id middleware", () => {
+    // 上流サービスやクライアントログとの相関追跡のため、リクエスト単位で
+    // ID を採番して応答ヘッダに返す挙動を固定する。UUID v4 の書式のみを
+    // 対象に、時系列で他の UUID 実装 (v7 等) に差し替える場合はここも更新する。
+    const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+    it("generates a UUID X-Request-Id when the header is absent", async () => {
+      const res = await request(app).get("/health");
+      expect(res.status).toBe(200);
+      expect(res.headers["x-request-id"]).toMatch(UUID_V4);
+    });
+
+    it("generates a unique X-Request-Id per request", async () => {
+      const [a, b] = await Promise.all([
+        request(app).get("/health"),
+        request(app).get("/health"),
+      ]);
+      expect(a.headers["x-request-id"]).toMatch(UUID_V4);
+      expect(b.headers["x-request-id"]).toMatch(UUID_V4);
+      expect(a.headers["x-request-id"]).not.toBe(b.headers["x-request-id"]);
+    });
+
+    it("echoes a valid inbound X-Request-Id back to the response", async () => {
+      const inbound = "abc123DEF-456_789.0+ab/cd=";
+      const res = await request(app)
+        .get("/health")
+        .set("X-Request-Id", inbound);
+      expect(res.headers["x-request-id"]).toBe(inbound);
+    });
+
+    it("regenerates when inbound X-Request-Id contains invalid characters", async () => {
+      // 空白 / 制御文字を含む値はログ・ヘッダインジェクションの温床なので
+      // 素直に受け入れず、こちらで新規採番する。
+      const res = await request(app)
+        .get("/health")
+        .set("X-Request-Id", "bad id with spaces");
+      expect(res.headers["x-request-id"]).not.toBe("bad id with spaces");
+      expect(res.headers["x-request-id"]).toMatch(UUID_V4);
+    });
+
+    it("regenerates when inbound X-Request-Id exceeds 128 characters", async () => {
+      const longId = "a".repeat(200);
+      const res = await request(app)
+        .get("/health")
+        .set("X-Request-Id", longId);
+      expect(res.headers["x-request-id"]).not.toBe(longId);
+      expect(res.headers["x-request-id"]).toMatch(UUID_V4);
+    });
+
+    it("accepts the boundary 128-character X-Request-Id verbatim", async () => {
+      const id = "a".repeat(128);
+      const res = await request(app)
+        .get("/health")
+        .set("X-Request-Id", id);
+      expect(res.headers["x-request-id"]).toBe(id);
+    });
+
+    it("includes X-Request-Id on 404 responses", async () => {
+      const res = await request(app).get("/definitely-not-a-route");
+      expect(res.status).toBe(404);
+      expect(res.headers["x-request-id"]).toMatch(UUID_V4);
+    });
+
+    it("includes X-Request-Id on 413 (payload too large) responses", async () => {
+      const oversized = "x".repeat(300 * 1024);
+      const res = await request(app)
+        .post("/api/metrics")
+        .set("Content-Type", "application/json")
+        .send(`{"payload":"${oversized}"}`);
+      expect(res.status).toBe(413);
+      expect(res.headers["x-request-id"]).toMatch(UUID_V4);
+    });
+  });
+
   describe("GET /api/metrics", () => {
     it("returns 502 when analytics is down", async () => {
       const res = await request(app).get("/api/metrics");

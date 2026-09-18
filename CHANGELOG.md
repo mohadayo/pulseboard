@@ -9,7 +9,10 @@
 
 ### Added
 
-- （次回リリースで追加する機能をここに記載）
+- **api-gateway**: `X-Request-Id` middleware を追加。上流から受け取った
+  `X-Request-Id` を検証したうえで応答ヘッダに再送し、不正 / 未指定時は
+  `crypto.randomUUID()` で新規採番する。アクセスログにも `request_id`
+  として付与し、分散環境でのリクエスト相関追跡を可能にした。
 
 ### Changed
 
