@@ -588,6 +588,7 @@ pulseboard/
 `docs/` 配下に、開発・運用・障害対応のためのドキュメントを整理しています。
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — システム構成・サービス境界・レイヤ責務のバードビュー
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — プロダクトビジョン・Now/Next/Later の優先順位・非目標 (Non-Goals) をまとめたロードマップ
 - [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) — メトリクス・構造化ログ・分散トレース・SLO/SLI・アラート設計の統一運用方針
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — リリース・ビルド・環境昇格・ロールバックの手順書
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — インシデント初動 / サービス別リカバリ手順
