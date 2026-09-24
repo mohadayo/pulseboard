@@ -1,5 +1,12 @@
 # PulseBoard
 
+[![CI](https://github.com/mohadayo/pulseboard/actions/workflows/ci.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/ci.yml)
+[![Hadolint](https://github.com/mohadayo/pulseboard/actions/workflows/hadolint.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/hadolint.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg?logo=python&logoColor=white)](analytics-api/)
+[![Go](https://img.shields.io/badge/go-1.22+-00add8.svg?logo=go&logoColor=white)](health-checker/)
+[![TypeScript](https://img.shields.io/badge/typescript-node%2022-3178c6.svg?logo=typescript&logoColor=white)](api-gateway/)
+
 Service health monitoring and analytics platform built with a polyglot microservice architecture using Python, Go, and TypeScript.
 
 ## 目次
