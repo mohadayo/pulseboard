@@ -17,7 +17,23 @@ const server = app.listen(PORT, () => {
 // 完了させたうえで終了する。タイムアウト超過時は強制終了 (exit 1)。
 // Docker/Kubernetes 環境でのローリングアップデート中に、リクエストの
 // 途中切断や 5xx を発生させないための実装。
+//
+// Kubernetes の preStop フックや、SIGTERM 送信直後の SIGINT 等で複数の
+// シグナルが短時間に連続して届いた場合、ガードが無いと以下が起きる:
+//   1. `forceExit` タイマーが複数張られ、片方だけが clearTimeout される
+//   2. `server.close()` が二度呼ばれ、2 回目は "Server is not running"
+//      を含むエラーを callback に渡すため、本来 0 で終了すべきプロセスが
+//      exit(1) してしまう
+// モジュールローカルな `isShuttingDown` フラグで一回だけ走ることを保証する。
+let isShuttingDown = false;
 function shutdown(signal: string): void {
+  if (isShuttingDown) {
+    logger.info("Shutdown already in progress, ignoring additional signal", {
+      signal,
+    });
+    return;
+  }
+  isShuttingDown = true;
   logger.info("Received shutdown signal", { signal });
   const forceExit = setTimeout(() => {
     logger.error("Graceful shutdown timed out, forcing exit", {
