@@ -1,0 +1,21 @@
+# asdf / mise / rtx 等のバージョンマネージャ用のツールバージョン宣言。
+#
+# 目的:
+#   - ローカル開発環境のランタイムを CI (.github/workflows/ci.yml) と揃え、
+#     「ローカルでは通るのに CI で落ちる」という乖離を減らす。
+#   - 新規コントリビュータが各サービス (analytics-api / health-checker /
+#     api-gateway) のランタイムを一括で導入できるようにする。
+#
+# 使い方:
+#   - asdf: リポジトリ直下で `asdf install` を実行すると全ツールが入る
+#     (事前に対応プラグインの追加が必要: `asdf plugin add python` / `nodejs` / `golang`)。
+#   - mise / rtx: 同ディレクトリ配下で自動的にアクティベートされる。
+#
+# バージョンポリシー:
+#   - メジャー/マイナーは CI (actions/setup-* の指定) と一致させる。
+#   - パッチは asdf が完全バージョン指定を要求するため、現時点の安定版を記載する。
+#     CI 側 (actions/setup-python 等) はメジャー/マイナー指定のため、
+#     ここのパッチが CI 挙動に影響することはない。
+python 3.12.7
+nodejs 22.11.0
+golang 1.22.9
