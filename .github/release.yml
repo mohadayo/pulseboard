@@ -1,0 +1,52 @@
+# GitHub Releases 画面の "Generate release notes" でマージ済み PR を
+# ラベルごとにカテゴライズして自動展開するための設定。
+#
+# docs: https://docs.github.com/ja/repositories/releasing-projects-on-github/automatically-generated-release-notes
+#
+# カテゴリは CHANGELOG.md が従う Keep a Changelog の分類に対応させ、
+# 既存の Issue/PR テンプレートで付与しているラベル (bug / enhancement /
+# documentation / dependencies など) をそのまま再利用する。
+#
+# このファイルは Release UI のみが解釈する純粋なメタデータで、
+# CI / ビルド / ランタイム挙動には一切影響しない。
+changelog:
+  exclude:
+    # 以下のラベルが付与された PR はリリースノートから除外する。
+    labels:
+      - duplicate
+      - invalid
+      - wontfix
+      - skip-changelog
+    # bot 由来の PR はノイズになりやすいので除外する。
+    # Dependencies セクションに含めたい場合は、PR に `dependencies`
+    # ラベルを明示的に付けたうえで、ここから該当 author を外す。
+    authors:
+      - dependabot
+      - dependabot[bot]
+      - github-actions
+      - github-actions[bot]
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking-change
+    - title: New Features
+      labels:
+        - enhancement
+        - feature
+    - title: Bug Fixes
+      labels:
+        - bug
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Security
+      labels:
+        - security
+    # 上記いずれのラベルも持たない PR はここに集約する。
+    # (`*` は "どのカテゴリにも分類されなかったもの" を意味する特殊ラベル)
+    - title: Other Changes
+      labels:
+        - "*"
