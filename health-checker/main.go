@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -66,6 +67,26 @@ func methodAllowed(w http.ResponseWriter, r *http.Request, allowed ...string) bo
 	return false
 }
 
+// drainAndClose は HTTP レスポンスボディを全読み込みしてから Close する。
+//
+// net/http.Client は、ボディが読み切られていない接続を keep-alive プールに
+// 戻さない。/health のような小さなレスポンスでも、Close() だけだと内部的に
+// 接続が破棄され、`CheckService` のポーリング・`ReportMetric` の連投で毎回
+// 新規 TCP 接続を張り直すコストが積み上がる（本番の高頻度ポーリング設定で
+// は 1 サイクル × ターゲット数の TCP ハンドシェイクが毎 interval 発生）。
+//
+// io.Discard への io.Copy は小さな既読バッファを使うので割り当てもゼロ。
+// Close() のエラーはすでに完了済みのトランスポート上の情報なので無視する
+// （Close 失敗を上位に伝えても呼び出し側は何もできない）。
+//
+// nil ReadCloser を渡してはならない。net/http.Client.Get/Post は err == nil
+// のとき必ず non-nil の Body を返す契約なので、呼び出し側で err チェック後に
+// 使うぶんにはこの前提は満たされる。
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
+
 func CheckService(client *http.Client, target ServiceTarget) CheckResult {
 	start := time.Now()
 	// analytics-api 側は Python の time.time() が返す float（マイクロ秒粒度）を
@@ -88,7 +109,9 @@ func CheckService(client *http.Client, target ServiceTarget) CheckResult {
 		log.Printf("[WARN] Service %s is unhealthy: %v", target.Name, err)
 		return result
 	}
-	defer resp.Body.Close()
+	// ボディを読み切ってから閉じることで、net/http.Client の keep-alive プールに
+	// 接続を戻し、次回チェックで TCP ハンドシェイクを再利用できるようにする。
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
 		result.Status = "healthy"
@@ -205,7 +228,9 @@ func reportMetricWithPolicy(
 			)
 		} else {
 			statusCode := resp.StatusCode
-			resp.Body.Close()
+			// ボディを読み切ってから閉じ、keep-alive プールに接続を戻す。
+			// リトライ時に同じ analytics-api への TCP 接続を使い回せる。
+			drainAndClose(resp.Body)
 			if statusCode == http.StatusCreated {
 				log.Printf(
 					"[INFO] Reported metric for %s to analytics (attempt %d)",
