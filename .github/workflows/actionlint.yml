@@ -1,0 +1,61 @@
+# GitHub Actions ワークフロー静的解析
+#
+# 目的:
+#   `.github/workflows/*.yml` に対して actionlint を実行し、
+#   以下のような静的解析レベルの不備を PR / push 時点で検知する:
+#     - 無効な `runs-on` ラベル / 旧式のランナー
+#     - 未定義 secret / env 参照
+#     - `${{ ... }}` の構文誤り
+#     - shellcheck による `run:` 内シェルスクリプトの基本検査
+#
+# 設計上のポイント:
+#   - 既存の ci / codeql / dependency-review / hadolint とは独立した軽量ジョブ
+#   - 公式配布のバイナリリリース (rhysd/actionlint) を `actionlint` の
+#     ダウンロードスクリプト経由で取得して実行 (postinstall なし)。
+#   - 権限は `contents: read` のみ。
+#   - paths フィルタで `.github/workflows/**` と `.github/actionlint*`
+#     変更時のみ発火し、無関係変更での実行を回避。
+#   - `concurrency` により同一 ref の多重実行を抑止。
+#   - `timeout-minutes: 5` でハングを防止。
+
+name: actionlint
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/**
+      - .github/actionlint.yaml
+      - .github/actionlint.yml
+  pull_request:
+    paths:
+      - .github/workflows/**
+      - .github/actionlint.yaml
+      - .github/actionlint.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download actionlint
+        id: download
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          echo "bin=$(pwd)/actionlint" >> "$GITHUB_OUTPUT"
+
+      - name: Run actionlint
+        run: ${{ steps.download.outputs.bin }} -color
