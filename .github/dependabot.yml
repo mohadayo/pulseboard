@@ -1,0 +1,119 @@
+# Dependabot 設定
+# 全マイクロサービスの依存パッケージを週次で監視する。
+# 各エコシステムごとに個別の PR が生成される。
+
+version: 2
+
+updates:
+  # analytics-api (Python)
+  - package-ecosystem: "pip"
+    directory: "/analytics-api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(analytics-api)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+      - "analytics-api"
+
+  # api-gateway (Node.js / TypeScript)
+  - package-ecosystem: "npm"
+    directory: "/api-gateway"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(api-gateway)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "api-gateway"
+
+  # health-checker (Go)
+  - package-ecosystem: "gomod"
+    directory: "/health-checker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(health-checker)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "go"
+      - "health-checker"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # Docker (各サービスの Dockerfile を監視)
+  - package-ecosystem: "docker"
+    directory: "/analytics-api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(analytics-api)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/api-gateway"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(api-gateway)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/health-checker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(health-checker)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
