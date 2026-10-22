@@ -7,14 +7,28 @@ venv/
 *.egg
 dist/
 build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.python-version
+pip-wheel-metadata/
 
 # Go
 health-checker/health-checker
+*.test
+*.out
 
 # Node / TypeScript
 node_modules/
 api-gateway/dist/
 *.js.map
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.pnpm-store/
 
 # Environment
 .env
@@ -26,6 +40,8 @@ api-gateway/dist/
 *.swp
 *.swo
 *~
+*.iml
+.vs/
 
 # OS
 .DS_Store
@@ -37,4 +53,13 @@ docker-compose.override.yml
 # Coverage
 htmlcov/
 .coverage
+.coverage.*
 coverage/
+coverage.xml
+*.cover
+junit.xml
+junit-*.xml
+
+# Logs
+*.log
+logs/
