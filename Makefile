@@ -1,4 +1,4 @@
-.PHONY: test test-python test-go test-ts lint lint-python lint-go lint-ts type-check type-check-ts ci up down build clean
+.PHONY: test test-python test-go test-ts lint lint-python lint-go lint-ts type-check type-check-ts ci up down logs build clean
 
 test: test-python test-go test-ts
 
