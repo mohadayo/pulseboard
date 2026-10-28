@@ -1,6 +1,12 @@
 import request from "supertest";
 import axios, { AxiosError } from "axios";
-import { app, ANALYTICS_URL, CHECKER_URL, STATUS_PROBE_TIMEOUT } from "./app";
+import {
+  app,
+  ANALYTICS_URL,
+  CHECKER_URL,
+  STATUS_PROBE_TIMEOUT,
+  parsePositiveIntEnv,
+} from "./app";
 
 describe("API Gateway", () => {
   describe("GET /health", () => {
@@ -1372,6 +1378,76 @@ describe("API Gateway", () => {
         .send("not json at all");
       expect(res.status).toBe(400);
       expect(res.body.error).toBe("invalid JSON body");
+    });
+  });
+
+  describe("parsePositiveIntEnv", () => {
+    // `parseInt(process.env.X || "default", 10)` の直書きが抱えていた落とし穴
+    // (NaN / 0 / 負値を axios timeout にそのまま渡すと timeout 無指定扱いに
+    // なる) を回帰防止する。helper 単体で正・不正パターンを網羅する。
+    const ENV_KEY = "__PARSE_POSITIVE_INT_ENV_TEST__";
+
+    beforeEach(() => {
+      delete process.env[ENV_KEY];
+    });
+    afterAll(() => {
+      delete process.env[ENV_KEY];
+    });
+
+    it("returns the fallback when the env var is unset", () => {
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("returns the fallback when the env var is empty string", () => {
+      process.env[ENV_KEY] = "";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("parses a plain positive integer", () => {
+      process.env[ENV_KEY] = "7500";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(7500);
+    });
+
+    it("tolerates leading/trailing whitespace around a valid integer", () => {
+      process.env[ENV_KEY] = "  250  ";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(250);
+    });
+
+    it("falls back when the value is non-numeric (parseInt would yield NaN)", () => {
+      process.env[ENV_KEY] = "abc";
+      // NaN をそのまま axios に渡すと timeout 無指定になる挙動を防ぐ。
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("falls back when the value starts numeric but has trailing junk (12abc)", () => {
+      // parseInt は "12abc" を 12 として受け入れてしまうが、typo の兆候として
+      // 弾く方が運用上安全なため fallback を返す。
+      process.env[ENV_KEY] = "12abc";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("falls back when the value is zero", () => {
+      // axios は timeout=0 を「無制限待ち」として扱うため、0 は不正値として
+      // 既定値へ寄せる。
+      process.env[ENV_KEY] = "0";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("falls back when the value is negative", () => {
+      process.env[ENV_KEY] = "-5";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("falls back when the value is a decimal (parseInt would truncate)", () => {
+      // "3.5" を parseInt で読むと 3 に丸められ、意図しない値で起動してしまう。
+      // typo の兆候として弾く。
+      process.env[ENV_KEY] = "3.5";
+      expect(parsePositiveIntEnv(ENV_KEY, 1234)).toBe(1234);
+    });
+
+    it("STATUS_PROBE_TIMEOUT exported value falls through parsePositiveIntEnv (3000 default)", () => {
+      // モジュールロード時に実際に helper が使われている契約の回帰テスト。
+      expect(STATUS_PROBE_TIMEOUT).toBe(3000);
     });
   });
 });

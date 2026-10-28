@@ -9,14 +9,52 @@ const logger = createLogger({
   transports: [new transports.Console()],
 });
 
+// タイムアウト / ポート等の数値 env を検証付きで読み取る。
+//
+// 旧実装は `parseInt(process.env.X || "default", 10)` を直接呼んでいた。
+// この書き方には落とし穴が二つある:
+//   1. `X=abc` のように非数値を渡すと `parseInt` は NaN を返し、axios に
+//      そのまま渡ると timeout が「無指定」扱いになる (axios は NaN/0 を
+//      タイムアウト無効として解釈する)。typo 一つで本来 5 秒で切るはずの
+//      上流呼び出しが無制限に待ち、プロセスが詰まる本番事故につながる。
+//   2. `X=0` / `X=-1` を渡した場合も同様に timeout が無効化されるが、ログも
+//      警告も出ないため、設定ミスを運用時に気付けない。
+//
+// `parsePositiveIntEnv` は env が未設定なら fallback、設定済みなら必ず
+// 正の整数として解釈し、不正値は warn ログを出したうえで fallback に
+// 寄せる (fail-open)。「設定を効かせたつもりが黙って無効化されている」
+// 状態をゼロにする。
+//
+// テスト容易性のため export しておく (`app.test.ts` から直接呼ぶ)。
+export function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  // `parseInt("12abc", 10)` のような尻切れ入力も typo の兆候なので弾く。
+  // 一方 `parseInt` は前後の空白は許容するため、`trim()` 済みの文字列と
+  // 比較することで "厳密に整数文字列であること" を担保する。
+  const trimmed = raw.trim();
+  const parsed = parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0 || String(parsed) !== trimmed) {
+    logger.warn("Invalid numeric env var; falling back to default", {
+      name,
+      value: raw,
+      fallback,
+    });
+    return fallback;
+  }
+  return parsed;
+}
+
 const ANALYTICS_URL = process.env.ANALYTICS_URL || "http://localhost:8001";
 const CHECKER_URL = process.env.CHECKER_URL || "http://localhost:8002";
-const PROXY_TIMEOUT = parseInt(process.env.PROXY_TIMEOUT || "5000", 10);
+const PROXY_TIMEOUT = parsePositiveIntEnv("PROXY_TIMEOUT", 5000);
 // /api/status から各サービスの /health を叩く際のタイムアウト。
 // 旧実装は 3000 をハードコードしており、ネットワーク事情に応じた調整ができなかった。
 // PROXY_TIMEOUT より短めの既定にすることで、集約 API が遅延しても
 // /api/status は素早く応答できる。
-const STATUS_PROBE_TIMEOUT = parseInt(process.env.STATUS_PROBE_TIMEOUT || "3000", 10);
+const STATUS_PROBE_TIMEOUT = parsePositiveIntEnv("STATUS_PROBE_TIMEOUT", 3000);
 
 // JSON ペイロードの最大サイズ。明示しないと express.json の既定 100kb で動くため、
 // 環境変数で上書きできる形で明示する。analytics-api の /metrics/batch
@@ -412,4 +450,12 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-export { app, logger, ANALYTICS_URL, CHECKER_URL, MAX_REQUEST_BODY, STATUS_PROBE_TIMEOUT };
+export {
+  app,
+  logger,
+  ANALYTICS_URL,
+  CHECKER_URL,
+  MAX_REQUEST_BODY,
+  PROXY_TIMEOUT,
+  STATUS_PROBE_TIMEOUT,
+};
