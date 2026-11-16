@@ -6,6 +6,7 @@ services:
     environment:
       - ANALYTICS_PORT=8001
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 10s
@@ -24,6 +25,7 @@ services:
     depends_on:
       analytics-api:
         condition: service_healthy
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8002/health"]
       interval: 10s
@@ -45,6 +47,7 @@ services:
         condition: service_healthy
       health-checker:
         condition: service_healthy
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
       interval: 10s
