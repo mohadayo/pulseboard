@@ -1,6 +1,9 @@
 # PulseBoard
 
 [![CI](https://github.com/mohadayo/pulseboard/actions/workflows/ci.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/ci.yml)
+[![actionlint](https://github.com/mohadayo/pulseboard/actions/workflows/actionlint.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/actionlint.yml)
+[![CodeQL](https://github.com/mohadayo/pulseboard/actions/workflows/codeql.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/codeql.yml)
+[![Dependency Review](https://github.com/mohadayo/pulseboard/actions/workflows/dependency-review.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/dependency-review.yml)
 [![Hadolint](https://github.com/mohadayo/pulseboard/actions/workflows/hadolint.yml/badge.svg)](https://github.com/mohadayo/pulseboard/actions/workflows/hadolint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg?logo=python&logoColor=white)](analytics-api/)
