@@ -203,7 +203,7 @@ Response:
 | DELETE | `/metrics` | サービス名 / 時刻 を組合せて対象メトリクスを削除（`?service=` / `?before=`） |
 | GET | `/metrics/summary` | Per-service summary statistics |
 | GET | `/metrics/overview` | 全レコードを 1 つに集約したトップレベル稼働サマリ（`?service=` / `?status=` / `?since=` / `?until=`） |
-| GET | `/metrics/services` | サービス一覧（観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻） |
+| GET | `/metrics/services` | サービス一覧(観測数・healthy 数・uptime%・最新ステータス・初回／最終観測時刻) |
 | GET | `/metrics/services/names` | distinct な service 名のみを返す軽量エンドポイント(per-service 集計を行わずペイロード最小化、`?q=` / `?since=` / `?until=` / `?order=` / `?limit=` / `?offset=`) |
 | GET | `/metrics/count` | フィルタ後のレコード件数・status 別件数・登場サービス数のみを返す軽量エンドポイント（`?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
 | GET | `/metrics/timeseries` | フィルタ後のレコードを `bucket_seconds` 秒幅の時系列バケットに集約（`?bucket_seconds=` / `?service=` / `?status=` / `?since=` / `?until=` / `?q=`） |
@@ -506,7 +506,7 @@ EXTRA_TARGETS='[{"name":"redis","url":"http://redis:6379/ping"},{"name":"mailer"
 ```
 
 - `name` / `url` の両方が非空のエントリのみ有効。片方でも空だと該当エントリはスキップされる
-- JSON パース失敗時は警告ログを出してデフォルトターゲットのみで起動（fail-open）
+- JSON パース失敗時は警告ログを出してデフォルトターゲットのみで起動(fail-open)
   — オペレータの typo でコンテナが再起動ループに陥らないようにするための設計
 - 追加ターゲットにも同じ間隔・タイムアウト・リトライ設定が適用される
 
@@ -547,7 +547,9 @@ make test          # Run all tests
 make test-python   # Python tests only (pytest)
 make test-go       # Go tests only (go test)
 make test-ts       # TypeScript tests only (jest)
-make lint          # Run all linters
+make lint          # Run all linters (flake8 / go vet / eslint)
+make type-check    # tsc --noEmit (tsconfig.typecheck.json, テストコードも含む)
+make ci            # CI と同じ順で lint → type-check → test を一括実行
 ```
 
 ## CI/CD
@@ -563,33 +565,69 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and PR t
 
 ```
 pulseboard/
-├── api-gateway/              # TypeScript API Gateway
+├── analytics-api/            # Python Analytics API (FastAPI)
+│   ├── main.py
+│   ├── test_main.py
+│   ├── test_count_q_validation.py
+│   ├── test_q_param_length_validation.py
+│   ├── pytest.ini
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   ├── .dockerignore
+│   └── Dockerfile
+├── api-gateway/              # TypeScript API Gateway (Express)
 │   ├── src/
 │   │   ├── app.ts
 │   │   ├── app.test.ts
 │   │   └── index.ts
 │   ├── package.json
+│   ├── package-lock.json
 │   ├── tsconfig.json
+│   ├── tsconfig.typecheck.json
 │   ├── jest.config.js
 │   ├── .eslintrc.json
-│   └── Dockerfile
-├── analytics-api/            # Python Analytics API
-│   ├── main.py
-│   ├── test_main.py
-│   ├── requirements.txt
+│   ├── .dockerignore
 │   └── Dockerfile
 ├── health-checker/           # Go Health Checker
 │   ├── main.go
 │   ├── main_test.go
+│   ├── config_handler_test.go
+│   ├── connection_reuse_test.go
+│   ├── extra_targets_test.go
+│   ├── targets_handler_test.go
 │   ├── go.mod
+│   ├── .dockerignore
 │   └── Dockerfile
+├── docs/                     # アーキテクチャ / 運用ドキュメント群
+│   ├── ARCHITECTURE.md
+│   ├── CI.md
+│   ├── DEPLOYMENT.md
+│   ├── FAQ.md
+│   ├── OBSERVABILITY.md
+│   ├── README.md
+│   ├── ROADMAP.md
+│   ├── RUNBOOK.md
+│   ├── TESTING.md
+│   └── TROUBLESHOOTING.md
 ├── .github/
-│   └── workflows/
-│       └── ci.yml
+│   └── workflows/            # ci / actionlint / codeql / dependency-review / hadolint
+│       ├── actionlint.yml
+│       ├── ci.yml
+│       ├── codeql.yml
+│       ├── dependency-review.yml
+│       └── hadolint.yml
 ├── docker-compose.yml
 ├── Makefile
+├── CHANGELOG.md
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── LICENSE
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
+├── .hadolint.yaml
+├── .tool-versions
 └── README.md
 ```
 
