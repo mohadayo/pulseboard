@@ -16,7 +16,7 @@ Error response from daemon: ... port is already allocated
 ### 原因
 
 `docker-compose.yml` で公開しているポート
-(`api-gateway: 3000` / `analytics-api: 8000` / `health-checker: 8080`) が
+(`api-gateway: 8000` / `analytics-api: 8001` / `health-checker: 8002`) が
 ホスト側で他プロセスによって使われています。
 
 ### 対処
@@ -24,12 +24,13 @@ Error response from daemon: ... port is already allocated
 1. どのプロセスが占有しているか確認する:
 
    ```sh
-   lsof -i :3000
    lsof -i :8000
-   lsof -i :8080
+   lsof -i :8001
+   lsof -i :8002
    ```
 
 2. 該当プロセスを停止するか、`.env` などでポート番号を変更する
+   (`GATEWAY_PORT` / `ANALYTICS_PORT` / `CHECKER_PORT`)
 3. 直近まで起動していた PulseBoard 自体が残っている場合は
    `docker compose down` で完全に停止する
 
@@ -116,11 +117,11 @@ Node.js のバージョンは CI に合わせて **22 系** を使用してく�
 `.env.example` を参考に、コンテナ内では以下のようにサービス名で参照する:
 
 ```
-HEALTH_CHECKER_URL=http://health-checker:8080
+CHECKER_URL=http://health-checker:8002
 ```
 
 ホスト OS から直接アクセスする場合のみ
-`http://localhost:8080` を使用します。
+`http://localhost:8002` を使用します。
 
 ## 6. Docker イメージのビルドが極端に遅い / 途中で OOM
 
